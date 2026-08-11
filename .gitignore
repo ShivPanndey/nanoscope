@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data and checkpoints are large and regenerable. Benchmark outputs in
+# results/ are deliberately NOT ignored: they are the evidence for the README.
+data/
+checkpoints/
+*.pt
+*.bin
+
+# OS
+.DS_Store

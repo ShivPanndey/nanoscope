@@ -1,0 +1,81 @@
+[project]
+name = "nanoscope"
+version = "0.1.0"
+description = "A decoder-only transformer built from scratch, with a parameter-matched ablation study of its architectural components."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "Shivank Pandey", email = "shivankpandey2005@gmail.com" }]
+
+dependencies = [
+    "torch>=2.6",
+    "numpy>=2.1",
+    "pydantic>=2.9",
+    "typer>=0.15",
+]
+
+[project.scripts]
+nanoscope = "nanoscope.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.120",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nanoscope"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "RUF",      # ruff-specific
+    "ANN",      # annotations, enforces the full-type-hints requirement
+    "PT",       # pytest style
+]
+# ANN101/ANN102 (self/cls) are deprecated in ruff and not selected.
+
+[tool.ruff.lint.per-file-ignores]
+# Fixture parameters are typed by pytest itself; return types are still required
+# so that mypy strict covers the test suite too.
+"tests/**" = ["ANN001"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_any_generics = true
+show_error_codes = true
+files = ["src", "tests"]
+
+# torch does not ship complete stubs for every submodule.
+[[tool.mypy.overrides]]
+module = ["torch.*"]
+follow_untyped_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "slow: marks tests that train or benchmark (deselect with '-m \"not slow\"')",
+    "mps: requires Apple Metal, skipped in CI which is CPU-only",
+]
