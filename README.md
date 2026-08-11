@@ -1,5 +1,7 @@
 # nanoscope
 
+[![CI](https://github.com/ShivPanndey/nanoscope/actions/workflows/ci.yml/badge.svg)](https://github.com/ShivPanndey/nanoscope/actions/workflows/ci.yml)
+
 A decoder-only transformer built from scratch in PyTorch, used to measure what each modern architectural component (RoPE, GQA, RMSNorm, SwiGLU, weight tying) actually contributes to validation loss and throughput.
 
 **Status: in development.** This README is written last and deliberately contains no results yet. Every number that eventually appears here will come from a script in `src/nanoscope/bench/` with its raw output committed under `results/`, reproducible by a single command.
