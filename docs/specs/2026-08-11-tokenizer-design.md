@@ -77,6 +77,7 @@ class Tokenizer:
     @classmethod
     def load(cls, path: Path) -> "Tokenizer": ...
 
+
 def train(corpus: bytes, vocab_size: int) -> list[tuple[int, int]]: ...
 ```
 
@@ -125,8 +126,7 @@ re-encode:
 
 ```python
 text = data.decode("utf-8", errors="surrogateescape")
-chunks = [m.group().encode("utf-8", errors="surrogateescape")
-          for m in PATTERN.finditer(text)]
+chunks = [m.group().encode("utf-8", errors="surrogateescape") for m in PATTERN.finditer(text)]
 ```
 
 The pattern's branches cover every character, so the chunks partition the input.

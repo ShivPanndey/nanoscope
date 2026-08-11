@@ -951,24 +951,25 @@ The `from pydantic import ...` line belongs at the top of the file with the othe
 Append these methods to the `Tokenizer` class in `src/nanoscope/tokenizer/tokenizer.py`:
 
 ```python
-    def save(self, path: Path) -> None:
-        document = TokenizerFile(
-            pattern=PATTERN_SOURCE,
-            special_tokens={END_OF_TEXT: END_OF_TEXT_ID},
-            corpus_sha256=self.corpus_sha256,
-            merges=self._merges,
-        )
-        path.write_text(document.model_dump_json(indent=2) + "\n", encoding="utf-8")
+def save(self, path: Path) -> None:
+    document = TokenizerFile(
+        pattern=PATTERN_SOURCE,
+        special_tokens={END_OF_TEXT: END_OF_TEXT_ID},
+        corpus_sha256=self.corpus_sha256,
+        merges=self._merges,
+    )
+    path.write_text(document.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    @classmethod
-    def load(cls, path: Path) -> "Tokenizer":
-        document = TokenizerFile.model_validate_json(path.read_text(encoding="utf-8"))
-        if document.pattern != PATTERN_SOURCE:
-            raise ValueError(
-                "tokenizer file was trained with a different split pattern; "
-                "its merge table is not valid under this one"
-            )
-        return cls(merges=list(document.merges), corpus_sha256=document.corpus_sha256)
+
+@classmethod
+def load(cls, path: Path) -> "Tokenizer":
+    document = TokenizerFile.model_validate_json(path.read_text(encoding="utf-8"))
+    if document.pattern != PATTERN_SOURCE:
+        raise ValueError(
+            "tokenizer file was trained with a different split pattern; "
+            "its merge table is not valid under this one"
+        )
+    return cls(merges=list(document.merges), corpus_sha256=document.corpus_sha256)
 ```
 
 Extend the imports at the top of `tokenizer.py` to:
