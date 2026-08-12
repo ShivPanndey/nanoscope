@@ -85,3 +85,57 @@ def train_naive(corpus: bytes, vocab_size: int) -> list[Pair]:
         words = dict(merged)
         merges.append(best)
     return merges
+
+
+def train_indexed(corpus: bytes, vocab_size: int) -> list[Pair]:
+    """Train by updating pair counts incrementally. The shipped path.
+
+    Maintains `pair -> set of word indices containing it`, so applying a merge
+    only rescans the words that actually held the merged pair rather than the
+    whole corpus. Must agree with `train_naive` exactly; the differential test
+    in tests/test_train.py enforces that.
+    """
+    n_merges = max(0, vocab_size - FIRST_MERGE_ID)
+    counted = _word_counts(corpus)
+    words: list[Word] = list(counted)
+    freqs: list[int] = [counted[word] for word in words]
+
+    pair_counts: dict[Pair, int] = defaultdict(int)
+    where: dict[Pair, set[int]] = defaultdict(set)
+    for index, word in enumerate(words):
+        for pair in pairwise(word):
+            pair_counts[pair] += freqs[index]
+            where[pair].add(index)
+
+    merges: list[Pair] = []
+    for k in range(n_merges):
+        best = _best_pair(pair_counts)
+        if best is None:
+            break
+        new_id = FIRST_MERGE_ID + k
+        merges.append(best)
+
+        # sorted() materialises the set before iteration, which matters: the
+        # loop body mutates `where` entries, including `where[best]` itself.
+        for index in sorted(where[best]):
+            old = words[index]
+            new = _merge_word(old, best, new_id)
+            words[index] = new
+            freq = freqs[index]
+            for pair in pairwise(old):
+                pair_counts[pair] -= freq
+                if pair_counts[pair] <= 0:
+                    del pair_counts[pair]
+                where[pair].discard(index)
+            for pair in pairwise(new):
+                pair_counts[pair] += freq
+                where[pair].add(index)
+
+        pair_counts.pop(best, None)
+        where.pop(best, None)
+    return merges
+
+
+# The public name. `train_naive` stays module-level but is not re-exported from
+# the package: its only caller is the differential test.
+train = train_indexed

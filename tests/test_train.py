@@ -5,7 +5,10 @@ file starts with the cases that pin the naive implementation's behaviour, since
 it is about to become the thing that certifies the shipped path.
 """
 
-from nanoscope.tokenizer.train import train_naive
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from nanoscope.tokenizer.train import train, train_indexed, train_naive
 from nanoscope.tokenizer.vocab import FIRST_MERGE_ID
 
 
@@ -45,3 +48,32 @@ def test_merges_never_cross_a_pre_token_boundary() -> None:
 def test_stops_early_when_no_pairs_remain() -> None:
     """A single-byte corpus has no adjacent pairs at all."""
     assert train_naive(b"a", FIRST_MERGE_ID + 50) == []
+
+
+@st.composite
+def corpora(draw: st.DrawFn) -> bytes:
+    """Small byte strings drawn from a deliberately narrow alphabet.
+
+    A narrow alphabet forces collisions and repeated pairs, which is where
+    incremental count maintenance actually breaks. Uniform random bytes would
+    mostly produce unique pairs and exercise nothing.
+    """
+    alphabet = draw(st.sampled_from([b"ab", b"abc ", b"ab c\n", b"a1 .\xff"]))
+    length = draw(st.integers(min_value=0, max_value=80))
+    return bytes(draw(st.lists(st.sampled_from(alphabet), min_size=length, max_size=length)))
+
+
+@given(corpus=corpora(), extra=st.integers(min_value=0, max_value=60))
+@settings(max_examples=200, deadline=None)
+def test_indexed_trainer_matches_the_naive_oracle(corpus: bytes, extra: int) -> None:
+    """The whole reason two trainers exist.
+
+    A stale pair count in the indexed trainer yields a worse merge table that
+    still round-trips perfectly, so this is the only test that can catch it.
+    """
+    vocab_size = FIRST_MERGE_ID + extra
+    assert train_indexed(corpus, vocab_size) == train_naive(corpus, vocab_size)
+
+
+def test_train_is_the_indexed_implementation() -> None:
+    assert train is train_indexed
