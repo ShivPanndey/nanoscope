@@ -1,10 +1,17 @@
 """The tokenizer itself: encoding, decoding, and the str convenience layer."""
 
 from itertools import pairwise
+from pathlib import Path
 
-from nanoscope.tokenizer.pretokenize import pretokenize
+from nanoscope.tokenizer.pretokenize import PATTERN_SOURCE, pretokenize
 from nanoscope.tokenizer.train import Pair
-from nanoscope.tokenizer.vocab import BYTE_TOKENS, END_OF_TEXT, FIRST_MERGE_ID
+from nanoscope.tokenizer.vocab import (
+    BYTE_TOKENS,
+    END_OF_TEXT,
+    END_OF_TEXT_ID,
+    FIRST_MERGE_ID,
+    TokenizerFile,
+)
 
 # Arbitrary binary input has unbounded chunk diversity, so the chunk cache
 # needs a ceiling. Clearing wholesale rather than evicting least-recently-used
@@ -81,3 +88,22 @@ class Tokenizer:
 
     def decode_str(self, ids: list[int]) -> str:
         return self.decode(ids).decode("utf-8", errors="surrogatepass")
+
+    def save(self, path: Path) -> None:
+        document = TokenizerFile(
+            pattern=PATTERN_SOURCE,
+            special_tokens={END_OF_TEXT: END_OF_TEXT_ID},
+            corpus_sha256=self.corpus_sha256,
+            merges=self._merges,
+        )
+        path.write_text(document.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: Path) -> "Tokenizer":
+        document = TokenizerFile.model_validate_json(path.read_text(encoding="utf-8"))
+        if document.pattern != PATTERN_SOURCE:
+            raise ValueError(
+                "tokenizer file was trained with a different split pattern; "
+                "its merge table is not valid under this one"
+            )
+        return cls(merges=list(document.merges), corpus_sha256=document.corpus_sha256)
