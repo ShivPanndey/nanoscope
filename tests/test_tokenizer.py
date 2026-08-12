@@ -23,7 +23,9 @@ def test_bytes_round_trip_exactly(data: bytes) -> None:
     assert TRAINED.decode(TRAINED.encode(data)) == data
 
 
-@given(st.text())
+# st.text()'s default alphabet is UTF-8-encodable only, which
+# excludes the very surrogates this test is named for.
+@given(st.text(alphabet=st.characters()))
 @settings(max_examples=300)
 def test_text_round_trips_including_lone_surrogates(text: str) -> None:
     assert TRAINED.decode_str(TRAINED.encode_str(text)) == text
