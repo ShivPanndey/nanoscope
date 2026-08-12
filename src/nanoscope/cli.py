@@ -4,9 +4,15 @@ Subcommands are registered here as each component lands. Keeping this file
 honest matters: a verb appears only once the thing behind it actually works.
 """
 
+import hashlib
+from pathlib import Path
+from typing import Annotated
+
 import typer
 
 from nanoscope import __version__
+from nanoscope.tokenizer import Tokenizer, train
+from nanoscope.tokenizer.vocab import DEFAULT_VOCAB_SIZE, FIRST_MERGE_ID
 
 app = typer.Typer(
     name="nanoscope",
@@ -30,3 +36,34 @@ def main() -> None:
 def version() -> None:
     """Print the installed nanoscope version."""
     typer.echo(__version__)
+
+
+tokenizer_app = typer.Typer(
+    help="Train the byte-level BPE tokenizer.",
+    no_args_is_help=True,
+)
+app.add_typer(tokenizer_app, name="tokenizer")
+
+
+@tokenizer_app.command("train")
+def tokenizer_train(
+    input_path: Annotated[Path, typer.Option("--input", help="Training corpus.")],
+    output_path: Annotated[Path, typer.Option("--output", help="Destination JSON file.")],
+    vocab_size: Annotated[
+        int, typer.Option("--vocab-size", help="Total vocabulary size.")
+    ] = DEFAULT_VOCAB_SIZE,
+) -> None:
+    """Train a tokenizer on a corpus file and write it to disk.
+
+    The corpus is read whole rather than streamed: chunking a stream at
+    arbitrary boundaries splits pre-tokens across them and perturbs the pair
+    counts. See section 10 of the tokenizer spec.
+    """
+    corpus = input_path.read_bytes()
+    digest = hashlib.sha256(corpus).hexdigest()
+    merges = train(corpus, vocab_size)
+    Tokenizer(merges, corpus_sha256=digest).save(output_path)
+    typer.echo(
+        f"wrote {output_path}: {len(merges)} merges, "
+        f"vocab {FIRST_MERGE_ID + len(merges)}, corpus sha256 {digest}"
+    )

@@ -81,6 +81,11 @@ class Tokenizer:
         return ids
 
     def decode(self, ids: list[int]) -> bytes:
+        for token_id in ids:
+            if not 0 <= token_id < len(self._vocab):
+                raise ValueError(
+                    f"token id {token_id} is outside the vocabulary (0..{len(self._vocab) - 1})"
+                )
         return b"".join(self._vocab[i] for i in ids)
 
     def encode_str(self, text: str) -> list[int]:

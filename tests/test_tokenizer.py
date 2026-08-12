@@ -74,6 +74,19 @@ def test_the_special_token_decodes_to_its_spelling() -> None:
     assert TRAINED.decode([END_OF_TEXT_ID]) == END_OF_TEXT.encode("utf-8")
 
 
+def test_decode_rejects_a_negative_id() -> None:
+    """Without a bounds check, Python's negative indexing wraps this to the
+    highest-rank merge token instead of failing -- the id looks decoded, not
+    rejected."""
+    with pytest.raises(ValueError, match="-1"):
+        TRAINED.decode([-1])
+
+
+def test_decode_rejects_an_id_past_the_end_of_the_vocabulary() -> None:
+    with pytest.raises(ValueError, match=str(TRAINED.vocab_size)):
+        TRAINED.decode([TRAINED.vocab_size])
+
+
 def test_training_actually_compresses() -> None:
     text = b"the cat sat on the mat, the cat sat again. " * 5
     assert len(TRAINED.encode(text)) < len(EMPTY.encode(text))
