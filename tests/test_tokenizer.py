@@ -137,3 +137,64 @@ def test_load_rejects_a_file_written_with_a_different_split_pattern(tmp_path: Pa
     )
     with pytest.raises(ValueError, match="pattern"):
         Tokenizer.load(path)
+
+
+def test_load_rejects_a_file_with_an_unknown_field(tmp_path: Path) -> None:
+    """A misspelled field (e.g. corpus_sha_256) must not be silently dropped.
+
+    With extra fields forbidden, a typo'd key fails loudly instead of loading
+    as if the field it was meant to be were simply absent.
+    """
+    path = tmp_path / "typo.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pattern": PATTERN_SOURCE,
+                "special_tokens": {END_OF_TEXT: END_OF_TEXT_ID},
+                "corpus_sha_256": "deadbeef",
+                "merges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match=r"[Ee]xtra"):
+        Tokenizer.load(path)
+
+
+def test_load_rejects_a_file_with_an_unsupported_version(tmp_path: Path) -> None:
+    """A version this build does not know how to read must fail, not load partially."""
+    path = tmp_path / "future.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "pattern": PATTERN_SOURCE,
+                "special_tokens": {END_OF_TEXT: END_OF_TEXT_ID},
+                "corpus_sha256": None,
+                "merges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="version"):
+        Tokenizer.load(path)
+
+
+def test_load_rejects_a_file_with_mismatched_special_tokens(tmp_path: Path) -> None:
+    """The special-token map is only meaningful alongside the id `decode` hardcodes."""
+    path = tmp_path / "mismatched.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pattern": PATTERN_SOURCE,
+                "special_tokens": {END_OF_TEXT: 999},
+                "corpus_sha256": None,
+                "merges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="special token"):
+        Tokenizer.load(path)

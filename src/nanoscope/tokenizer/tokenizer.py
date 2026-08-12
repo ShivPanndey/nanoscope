@@ -101,9 +101,19 @@ class Tokenizer:
     @classmethod
     def load(cls, path: Path) -> "Tokenizer":
         document = TokenizerFile.model_validate_json(path.read_text(encoding="utf-8"))
+        if document.version != 1:
+            raise ValueError(
+                f"tokenizer file has version {document.version}, but this build "
+                "only reads version 1"
+            )
         if document.pattern != PATTERN_SOURCE:
             raise ValueError(
                 "tokenizer file was trained with a different split pattern; "
                 "its merge table is not valid under this one"
+            )
+        if document.special_tokens != {END_OF_TEXT: END_OF_TEXT_ID}:
+            raise ValueError(
+                f"tokenizer file declares special tokens {document.special_tokens}, "
+                f"but this build hardcodes {{{END_OF_TEXT!r}: {END_OF_TEXT_ID}}}"
             )
         return cls(merges=list(document.merges), corpus_sha256=document.corpus_sha256)

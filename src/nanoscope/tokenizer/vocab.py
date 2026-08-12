@@ -15,7 +15,7 @@ The id-equals-byte-value invariant is what makes encoder bugs visible by
 inspection rather than only by test failure.
 """
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 BYTE_TOKENS = 256
 END_OF_TEXT = "<|endoftext|>"
@@ -30,6 +30,8 @@ class TokenizerFile(BaseModel):
     JSON rather than a binary format so a merge table is diffable in review and
     a corrupted one is readable by eye.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     version: int = 1
     pattern: str
