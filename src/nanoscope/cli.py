@@ -47,7 +47,12 @@ app.add_typer(tokenizer_app, name="tokenizer")
 
 @tokenizer_app.command("train")
 def tokenizer_train(
-    input_path: Annotated[Path, typer.Option("--input", help="Training corpus.")],
+    input_path: Annotated[
+        Path,
+        typer.Option(
+            "--input", exists=True, dir_okay=False, readable=True, help="Training corpus."
+        ),
+    ],
     output_path: Annotated[Path, typer.Option("--output", help="Destination JSON file.")],
     vocab_size: Annotated[
         int, typer.Option("--vocab-size", help="Total vocabulary size.")
@@ -59,6 +64,10 @@ def tokenizer_train(
     arbitrary boundaries splits pre-tokens across them and perturbs the pair
     counts. See section 10 of the tokenizer spec.
     """
+    if not output_path.parent.is_dir():
+        raise typer.BadParameter(
+            f"directory {output_path.parent} does not exist", param_hint="--output"
+        )
     corpus = input_path.read_bytes()
     digest = hashlib.sha256(corpus).hexdigest()
     merges = train(corpus, vocab_size)

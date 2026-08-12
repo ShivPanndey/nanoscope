@@ -11,6 +11,19 @@ from nanoscope.tokenizer.vocab import FIRST_MERGE_ID
 runner = CliRunner()
 
 
+def _squash(text: str) -> str:
+    """Collapse a Rich-rendered error panel into one lowercase alnum-only string.
+
+    CliRunner's default 80-column width word-wraps long paths and messages,
+    sometimes mid-word, with box-drawing borders spliced into the break. Pytest's
+    `tmp_path` is deeply nested and long enough to trigger this reliably, so
+    comparing raw substrings against `result.output` is flaky. Stripping
+    whitespace, punctuation, and border characters makes the assertion
+    independent of exactly where Rich chose to wrap.
+    """
+    return "".join(ch for ch in text if ch.isalnum()).lower()
+
+
 def test_train_writes_a_loadable_tokenizer(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus.txt"
     corpus.write_bytes(b"the cat sat on the mat. " * 50)
@@ -58,3 +71,39 @@ def test_train_records_the_corpus_hash(tmp_path: Path) -> None:
 def test_tokenizer_group_shows_help_rather_than_erroring() -> None:
     result = runner.invoke(app, ["tokenizer"])
     assert "train" in result.output
+
+
+def test_a_missing_input_file_fails_fast_with_a_named_error(tmp_path: Path) -> None:
+    """No traceback: Typer's own Path validation rejects it before any work starts."""
+    missing = tmp_path / "missing-corpus.txt"
+    out = tmp_path / "tokenizer.json"
+
+    result = runner.invoke(
+        app, ["tokenizer", "train", "--input", str(missing), "--output", str(out)]
+    )
+
+    assert result.exit_code == 2
+    squashed = _squash(result.output)
+    assert "invalidvaluefor" in squashed
+    assert "input" in squashed
+    assert "doesnotexist" in squashed
+    assert not out.exists()
+
+
+def test_a_missing_output_directory_fails_before_training(tmp_path: Path) -> None:
+    """The typo is knowable before the first pair is counted, so it must not train
+    to completion first only to fail on the write."""
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_bytes(b"the cat sat on the mat. " * 50)
+    out = tmp_path / "no" / "such" / "dir" / "tokenizer.json"
+
+    result = runner.invoke(
+        app, ["tokenizer", "train", "--input", str(corpus), "--output", str(out)]
+    )
+
+    assert result.exit_code == 2
+    squashed = _squash(result.output)
+    assert "invalidvaluefor" in squashed
+    assert "output" in squashed
+    assert "doesnotexist" in squashed
+    assert not out.parent.exists()
