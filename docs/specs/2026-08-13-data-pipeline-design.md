@@ -94,8 +94,43 @@ an over-long chunk, would silently change the tokenization and make the compress
 comparison against `tiktoken` meaningless. The observed maximum goes into the manifest,
 so the assumption is recorded as a measurement rather than a belief.
 
-The default ceiling is a decision for the plan, chosen after measuring the actual chunk
-length distribution on a sample of the corpus. It is not guessed here.
+### 5.1 Measured chunk length distribution
+
+Measured over the repository's own markdown, Python, and TOML files, since the corpus is
+not downloaded yet: 24 files, 155528 bytes, 34789 chunks.
+
+| Percentile | Chunk length |
+|---|---|
+| p50 | 4 bytes |
+| p90 | 9 bytes |
+| p99 | 13 bytes |
+| p99.9 | 18 bytes |
+| max | 54 bytes |
+
+Nothing exceeded 64 bytes. The longest chunk was a 54-byte run of spaces inside a
+markdown table in `DESIGN.md`, which is a formatting artifact rather than prose, and it
+came from `\s+` matching an unbroken whitespace run. That is worth noting because it is
+the same alternative that produces the pathological case: the tail of this distribution
+is made of whitespace runs, not words.
+
+Source code is a conservative stand-in. It contains long identifiers, URLs, and aligned
+tables that TinyStories prose will not, so the real corpus should be shorter-tailed. The
+measurement is replaced with the real one in the plan's gated task, and the ceiling
+revised if the stand-in turns out to have been optimistic.
+
+### 5.2 The ceiling
+
+`DEFAULT_MAX_CHUNK_BYTES` is **1024**.
+
+Both bounds are observations rather than preferences. From below, the largest chunk any
+real text here produced was 54 bytes, so 1024 leaves roughly 19x headroom and will never
+fire on ordinary input. From above, section 5's timings put a 2 KB chunk at 0.085s;
+scaling quadratically, a chunk at the ceiling costs about 0.02s, which is affordable as
+a rare event and unaffordable as a common one. A ceiling of 4096 would cost roughly 0.34s
+per chunk, which is past the point where a handful of them would be noticeable.
+
+The ceiling is a guard against degenerate input, not a tuning parameter. If it ever
+fires on real data, the right response is to look at the document, not to raise it.
 
 ## 6. Splitting
 
@@ -197,11 +232,29 @@ offline. It is kept as thin as possible for that reason.
   pipeline cannot produce a real artifact until one does. Training it is a prerequisite
   step, not part of this pipeline.
 
-## 12. Open questions for review
+## 12. Questions raised at review, and how they were settled
 
-1. Should `data prep` train the tokenizer when the `--tokenizer` path does not exist,
-   or require it to exist and fail otherwise? Failing is more predictable and keeps the
-   two expensive operations separately resumable, which is the current preference.
-2. Is a seeded split preferable to TinyStories' published train/validation files? The
-   argument for seeding is control and reproducibility; the argument against is
-   comparability with published numbers, which this project does not claim.
+**1. Should `data prep` train the tokenizer when `--tokenizer` does not exist?**
+
+No. It requires the file to exist and fails otherwise.
+
+Training the tokenizer and preparing the shards are the two most expensive operations in
+the project, and folding them into one verb makes them one failure unit: a crash in
+preparation would discard a completed training run, which is the same defect the
+tokenizer CLI's review round already fixed once. Keeping them separate also keeps the
+manifest honest, since it pins a tokenizer by digest and an implicitly trained one would
+be an artifact nobody chose or reviewed.
+
+**2. A seeded split, or TinyStories' published train and validation files?**
+
+A seeded split, taken over the published training file.
+
+The deciding argument is that the manifest must be sufficient to reproduce the artifact.
+A seed and a fraction are recorded and reproducible; "whatever was in the upstream
+validation file on the day we downloaded it" is neither, and it can drift without
+notice. The cost is comparability against published TinyStories numbers, which this
+project never claims: DESIGN.md's success criteria are internal, comparing ablation
+variants against each other on identical data.
+
+The published validation file is left untouched on disk. It costs nothing to keep, and
+it gives a genuinely external held-out set if a later question ever needs one.
