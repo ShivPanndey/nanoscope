@@ -11,7 +11,10 @@ htmlcov/
 
 # Data and checkpoints are large and regenerable. Benchmark outputs in
 # results/ are deliberately NOT ignored: they are the evidence for the README.
-data/
+# Anchored to the repo root: an unanchored `data/` also matches
+# src/nanoscope/data/, the pipeline's source package, and would silently drop
+# it from version control.
+/data/
 checkpoints/
 *.pt
 *.bin
