@@ -8,6 +8,14 @@ serialization, and the `tokenizer train` CLI verb. `make check` green.
 1. **Data pipeline.** TinyStories download, tokenize, memmap shards. Held-out
    validation split fixed by seed so every ablation sees identical data in
    identical order.
+
+   **Designed and planned, not yet built.** See
+   `docs/specs/2026-08-13-data-pipeline-design.md` and
+   `docs/plans/2026-08-13-data-pipeline.md`. The spec has two open questions
+   in section 12 that want an answer before Task 2 starts. Tasks 1 through 6
+   need no network and no long compute; Task 7 is gated on the download and
+   the tokenizer training run, and is where the `tiktoken` comparison and the
+   real artifact land.
 2. **Model.** Components in dependency order: RMSNorm, RoPE, attention
    (GQA + SDPA), SwiGLU MLP, block, transformer. Every component behind a
    config flag from the start, since retrofitting toggles later is how ablation
