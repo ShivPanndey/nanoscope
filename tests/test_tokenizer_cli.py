@@ -1,5 +1,6 @@
 """End-to-end test of the `tokenizer train` verb."""
 
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -11,6 +12,9 @@ from nanoscope.tokenizer.vocab import FIRST_MERGE_ID
 runner = CliRunner()
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
 def _squash(text: str) -> str:
     """Collapse a Rich-rendered error panel into one lowercase alnum-only string.
 
@@ -20,8 +24,15 @@ def _squash(text: str) -> str:
     comparing raw substrings against `result.output` is flaky. Stripping
     whitespace, punctuation, and border characters makes the assertion
     independent of exactly where Rich chose to wrap.
+
+    Escape sequences must go first, and as whole sequences. Filtering on
+    `isalnum` alone drops the ESC and the bracket but keeps the digits and the
+    final letter, so `\\x1b[36m` survives as `36m` and lands in the middle of
+    whatever Rich was colouring. That splits `--vocab-size` into `vocab0m136msize`
+    and the substring check fails. Colour is off in a plain local run and on in
+    CI, so the difference shows up only after a push.
     """
-    return "".join(ch for ch in text if ch.isalnum()).lower()
+    return "".join(ch for ch in _ANSI.sub("", text) if ch.isalnum()).lower()
 
 
 def test_train_writes_a_loadable_tokenizer(tmp_path: Path) -> None:
