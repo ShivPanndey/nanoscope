@@ -1,17 +1,23 @@
 """Pre-tokenization: split bytes into chunks that BPE merges never cross.
 
-The split pattern is cl100k_base's, taken verbatim from tiktoken (MIT licence).
-Using tiktoken's exact pattern rather than an approximation is deliberate. The
-compression comparison promised in DESIGN.md section 6 is only a clean read on
-this repo's merge table if both sides split text the same way; with different
-splitters it would report the combined effect of two splitters and two merge
-tables.
+The split pattern is cl100k_base's, semantically equivalent to tiktoken's
+(MIT licence). Matching tiktoken's split rather than settling for an
+approximation is deliberate. The compression comparison promised in DESIGN.md
+section 6 is only a clean read on this repo's merge table if both sides split
+text the same way; with different splitters it would report the combined
+effect of two splitters and two merge tables.
 """
 
 import regex
 
-# tiktoken cl100k_base, MIT licence. Needs \p{L} and \p{N}, which the standard
-# library `re` does not support -- hence the `regex` dependency.
+# cl100k_base's pattern, semantically equivalent to tiktoken's, with the first
+# branch enumerated rather than factored: written here as
+# `(?i:'s|'t|'re|'ve|'m|'ll|'d)` rather than tiktoken's
+# `'(?i:[sdmt]|ll|ve|re)`, which enumerates to the identical 20-string set
+# because `'` has no case mapping. Current tiktoken additionally uses
+# possessive quantifiers as a ReDoS hardening, not reproduced here. Needs
+# \p{L} and \p{N}, which the standard library `re` does not support -- hence
+# the `regex` dependency.
 PATTERN_SOURCE = (
     r"(?i:'s|'t|'re|'ve|'m|'ll|'d)"
     r"|[^\r\n\p{L}\p{N}]?\p{L}+"
@@ -32,8 +38,11 @@ def pretokenize(data: bytes) -> list[bytes]:
     `surrogateescape` bridges the two: it is total over all byte strings and
     byte-exact on re-encode, so no input is rejected and none is altered.
 
-    `finditer` rather than `findall`: the pattern contains an inline group, and
-    `findall` would return group contents instead of whole matches.
+    `finditer` rather than `findall`: `_PATTERN` has zero capturing groups
+    (`(?i:...)` is a non-capturing inline-flag group), so `findall` here would
+    return the same whole-match strings `finditer` does -- `finditer` is used
+    because each match needs `.encode(..., errors="surrogateescape")` applied
+    via `.group()`, not because of a group-content trap.
     """
     text = data.decode("utf-8", errors="surrogateescape")
     return [m.group().encode("utf-8", errors="surrogateescape") for m in _PATTERN.finditer(text)]

@@ -107,3 +107,71 @@ def test_a_missing_output_directory_fails_before_training(tmp_path: Path) -> Non
     assert "output" in squashed
     assert "doesnotexist" in squashed
     assert not out.parent.exists()
+
+
+def test_an_output_path_that_is_an_existing_directory_fails_before_training(
+    tmp_path: Path,
+) -> None:
+    """Without `dir_okay=False` this only fails inside `save()`, after a full
+    training run is spent. Typer must reject it before any work starts."""
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_bytes(b"the cat sat on the mat. " * 50)
+    out = tmp_path / "adir"
+    out.mkdir()
+
+    result = runner.invoke(
+        app, ["tokenizer", "train", "--input", str(corpus), "--output", str(out)]
+    )
+
+    assert result.exit_code == 2
+    squashed = _squash(result.output)
+    assert "invalidvaluefor" in squashed
+    assert "output" in squashed
+    assert "directory" in squashed
+
+
+def test_an_input_path_that_is_an_existing_directory_fails_fast(tmp_path: Path) -> None:
+    """Mirrors the --output case above: Typer's own Path validation rejects a
+    directory before any work starts."""
+    input_dir = tmp_path / "inputdir"
+    input_dir.mkdir()
+    out = tmp_path / "tokenizer.json"
+
+    result = runner.invoke(
+        app, ["tokenizer", "train", "--input", str(input_dir), "--output", str(out)]
+    )
+
+    assert result.exit_code == 2
+    squashed = _squash(result.output)
+    assert "invalidvaluefor" in squashed
+    assert "input" in squashed
+    assert "directory" in squashed
+    assert not out.exists()
+
+
+def test_a_vocab_size_at_or_below_first_merge_id_is_rejected(tmp_path: Path) -> None:
+    """--vocab-size 5 used to silently produce a 0-merge, vocab-257 tokenizer at
+    exit 0. A typo this small must be an argument error, not a no-op success."""
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_bytes(b"the cat sat on the mat. " * 50)
+    out = tmp_path / "tokenizer.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "tokenizer",
+            "train",
+            "--input",
+            str(corpus),
+            "--output",
+            str(out),
+            "--vocab-size",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 2
+    squashed = _squash(result.output)
+    assert "invalidvaluefor" in squashed
+    assert "vocabsize" in squashed
+    assert not out.exists()

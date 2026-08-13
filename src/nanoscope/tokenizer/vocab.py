@@ -44,18 +44,26 @@ class TokenizerFile(BaseModel):
     def _merges_only_reference_defined_ids(
         cls, merges: list[tuple[int, int]]
     ) -> list[tuple[int, int]]:
-        """A merge at rank k may reference only ids below FIRST_MERGE_ID + k.
+        """A merge at rank k may reference only ids below FIRST_MERGE_ID + k,
+        excluding the special token id, and no pair may repeat.
 
         Without this, a truncated or hand-edited file loads into a tokenizer
         whose vocabulary table is subtly wrong -- which shows up as degraded
-        compression, not as an error.
+        compression, not as an error. A duplicate pair is the same defect: it
+        validates, encodes to the later rank, and leaves the earlier rank's id
+        a permanently dead slot in the vocabulary.
         """
-        for rank, (first, second) in enumerate(merges):
+        seen: set[tuple[int, int]] = set()
+        for rank, pair in enumerate(merges):
+            if pair in seen:
+                raise ValueError(f"merge at rank {rank} repeats pair {pair}")
+            seen.add(pair)
             limit = FIRST_MERGE_ID + rank
-            for token_id in (first, second):
-                if not 0 <= token_id < limit:
+            for token_id in pair:
+                if not 0 <= token_id < limit or token_id == END_OF_TEXT_ID:
                     raise ValueError(
                         f"merge at rank {rank} references id {token_id}, "
-                        f"which is outside the defined range [0, {limit})"
+                        f"which is outside the defined range [0, {limit}) "
+                        f"excluding {END_OF_TEXT_ID}"
                     )
         return merges

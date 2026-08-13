@@ -1,8 +1,16 @@
 """Trainer tests.
 
-The differential test against the naive oracle arrives in the next task; this
-file starts with the cases that pin the naive implementation's behaviour, since
-it is about to become the thing that certifies the shipped path.
+Starts with cases that pin `train_naive`'s behaviour by hand-computed example,
+then the differential test that checks `train_indexed` against it, then the
+one-line pin that `train` is `train_indexed`.
+
+The hand-computed cases below call `train_naive` directly, not `train`. Spec
+section 7 says these check `train`'s output; that holds transitively through
+`test_indexed_trainer_matches_the_naive_oracle` (which certifies
+`train_indexed` against `train_naive` on generated corpora) plus
+`test_train_is_the_indexed_implementation` (which pins `train is
+train_indexed`), so `train_naive`'s pinned behaviour is `train`'s behaviour by
+composition of those two facts.
 """
 
 from hypothesis import given, settings

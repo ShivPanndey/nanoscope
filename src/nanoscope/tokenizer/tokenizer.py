@@ -38,6 +38,11 @@ class Tokenizer:
 
     The `str` methods are a thin wrapper using `surrogatepass`, which is total
     on `str`, so lone surrogates round-trip rather than raising.
+
+    `__init__` trusts its argument: it does not validate `merges` and can be
+    made to build a corrupt or index-error-raising vocabulary from bad input.
+    `Tokenizer.load` is the validating entry point; construct directly only
+    from a merge table you already know is well-formed.
     """
 
     def __init__(self, merges: list[Pair], corpus_sha256: str | None = None) -> None:
@@ -81,6 +86,10 @@ class Tokenizer:
         return ids
 
     def decode(self, ids: list[int]) -> bytes:
+        """Map ids back to bytes.
+
+        Raises `ValueError` if any id falls outside `[0, vocab_size)`.
+        """
         for token_id in ids:
             if not 0 <= token_id < len(self._vocab):
                 raise ValueError(
@@ -95,6 +104,12 @@ class Tokenizer:
         return self.decode(ids).decode("utf-8", errors="surrogatepass")
 
     def save(self, path: Path) -> None:
+        """Write this tokenizer to `path` as validated JSON.
+
+        Raises whatever `path.write_text` raises (e.g. `OSError` if the
+        destination is not writable); the document itself is always valid,
+        since it is built from this tokenizer's own state.
+        """
         document = TokenizerFile(
             pattern=PATTERN_SOURCE,
             special_tokens={END_OF_TEXT: END_OF_TEXT_ID},
@@ -105,6 +120,14 @@ class Tokenizer:
 
     @classmethod
     def load(cls, path: Path) -> "Tokenizer":
+        """Read and validate a tokenizer file written by `save`.
+
+        The validating entry point: raises `pydantic.ValidationError` (a
+        `ValueError` subclass) for a malformed merge table or an unknown
+        field, and plain `ValueError` for a wrong `version`, `pattern`, or
+        `special_tokens` -- checks this method performs itself rather than
+        the schema.
+        """
         document = TokenizerFile.model_validate_json(path.read_text(encoding="utf-8"))
         if document.version != 1:
             raise ValueError(

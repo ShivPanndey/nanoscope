@@ -18,11 +18,27 @@ from nanoscope.tokenizer.vocab import END_OF_TEXT, END_OF_TEXT_ID, FIRST_MERGE_I
 
 # One shared trained tokenizer: training is the slow part, and every property
 # below holds for any merge table, so retraining per example buys nothing.
+# Requests FIRST_MERGE_ID + 40 merges, but this corpus only yields 17 before
+# the trainer runs out of adjacent pairs (verified by direct measurement, not
+# a property this file re-derives): the merge table below is smaller than the
+# vocab_size argument suggests.
 TRAINED = Tokenizer(train(b"the cat sat on the mat, the cat sat again. " * 20, FIRST_MERGE_ID + 40))
 EMPTY = Tokenizer([])
 
+# st.binary() essentially never draws the specific English byte sequences
+# TRAINED's merge table was trained on, so a bare `st.binary()` strategy is
+# almost entirely byte-identity paths that exercise no merge. Mixing in pieces
+# drawn from the training corpus (plus arbitrary short binary noise) gives the
+# same total strategy a real chance of hitting merges, without narrowing what
+# it covers: `st.one_of(st.binary(), _CORPUS_LIKE)` keeps the original
+# unrestricted strategy in the mix.
+_PIECES = st.sampled_from(
+    [b"the ", b"cat", b" sat", b" mat", b" on", b".", b", ", b" again", b"\xff", b""]
+)
+_CORPUS_LIKE = st.lists(st.one_of(_PIECES, st.binary(max_size=4)), max_size=20).map(b"".join)
 
-@given(st.binary())
+
+@given(st.one_of(st.binary(), _CORPUS_LIKE))
 @settings(max_examples=300)
 def test_bytes_round_trip_exactly(data: bytes) -> None:
     assert TRAINED.decode(TRAINED.encode(data)) == data
@@ -46,7 +62,7 @@ def test_emoji_and_combining_characters_round_trip() -> None:
     assert TRAINED.decode_str(TRAINED.encode_str(text)) == text
 
 
-@given(st.binary())
+@given(st.one_of(st.binary(), _CORPUS_LIKE))
 def test_every_id_is_within_the_vocabulary(data: bytes) -> None:
     assert all(0 <= i < TRAINED.vocab_size for i in TRAINED.encode(data))
 
@@ -64,7 +80,7 @@ def test_an_untrained_tokenizer_emits_raw_byte_values(data: bytes) -> None:
     assert EMPTY.encode(data) == list(data)
 
 
-@given(st.binary())
+@given(st.one_of(st.binary(), _CORPUS_LIKE))
 def test_encode_never_emits_the_special_token(data: bytes) -> None:
     """What keeps the round-trip law total: no input can produce id 256."""
     assert END_OF_TEXT_ID not in TRAINED.encode(data)
@@ -93,9 +109,14 @@ def test_training_actually_compresses() -> None:
 
 
 def test_the_cache_does_not_change_results() -> None:
-    """Second call hits the chunk cache; it must return the same ids."""
+    """Second call hits the chunk cache; it must return the same ids a fresh,
+    cold instance built from the same merges would, not merely the same ids
+    as its own first call, which would also pass for a stable-but-wrong cache."""
     data = b"the cat sat on the mat"
-    assert TRAINED.encode(data) == TRAINED.encode(data)
+    cold = Tokenizer(TRAINED._merges)
+    warm = TRAINED
+    warm.encode(data)  # populate the cache
+    assert warm.encode(data) == cold.encode(data)
 
 
 def test_a_saved_tokenizer_loads_back_identically(tmp_path: Path) -> None:
@@ -133,6 +154,46 @@ def test_load_rejects_a_merge_that_references_an_undefined_id(tmp_path: Path) ->
         Tokenizer.load(path)
 
 
+def test_load_rejects_a_duplicate_merge_pair(tmp_path: Path) -> None:
+    """A repeated pair validates its way to a permanently dead vocabulary slot
+    at the earlier rank if not rejected here."""
+    path = tmp_path / "duplicate.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pattern": PATTERN_SOURCE,
+                "special_tokens": {END_OF_TEXT: END_OF_TEXT_ID},
+                "corpus_sha256": None,
+                "merges": [[97, 98], [97, 98]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError):
+        Tokenizer.load(path)
+
+
+def test_load_rejects_a_merge_that_references_the_special_token_id(tmp_path: Path) -> None:
+    """id 256 is <|endoftext|>, not a byte or an earlier merge; a merge that
+    references it is inert but no legitimate file contains one."""
+    path = tmp_path / "special-token-ref.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pattern": PATTERN_SOURCE,
+                "special_tokens": {END_OF_TEXT: END_OF_TEXT_ID},
+                "corpus_sha256": None,
+                "merges": [[97, 256]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError):
+        Tokenizer.load(path)
+
+
 def test_load_rejects_a_file_written_with_a_different_split_pattern(tmp_path: Path) -> None:
     """A merge table trained under another splitter is not usable with this one."""
     path = tmp_path / "foreign.json"
@@ -148,7 +209,7 @@ def test_load_rejects_a_file_written_with_a_different_split_pattern(tmp_path: Pa
         ),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="pattern"):
+    with pytest.raises(ValueError, match="different split pattern"):
         Tokenizer.load(path)
 
 

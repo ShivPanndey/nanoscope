@@ -53,9 +53,12 @@ def tokenizer_train(
             "--input", exists=True, dir_okay=False, readable=True, help="Training corpus."
         ),
     ],
-    output_path: Annotated[Path, typer.Option("--output", help="Destination JSON file.")],
+    output_path: Annotated[
+        Path, typer.Option("--output", dir_okay=False, help="Destination JSON file.")
+    ],
     vocab_size: Annotated[
-        int, typer.Option("--vocab-size", help="Total vocabulary size.")
+        int,
+        typer.Option("--vocab-size", min=FIRST_MERGE_ID + 1, help="Total vocabulary size."),
     ] = DEFAULT_VOCAB_SIZE,
 ) -> None:
     """Train a tokenizer on a corpus file and write it to disk.
@@ -71,8 +74,9 @@ def tokenizer_train(
     corpus = input_path.read_bytes()
     digest = hashlib.sha256(corpus).hexdigest()
     merges = train(corpus, vocab_size)
-    Tokenizer(merges, corpus_sha256=digest).save(output_path)
+    tokenizer = Tokenizer(merges, corpus_sha256=digest)
+    tokenizer.save(output_path)
     typer.echo(
         f"wrote {output_path}: {len(merges)} merges, "
-        f"vocab {FIRST_MERGE_ID + len(merges)}, corpus sha256 {digest}"
+        f"vocab {tokenizer.vocab_size}, corpus sha256 {digest}"
     )

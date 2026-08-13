@@ -79,8 +79,9 @@ on every merge, and an indexed one that tracks which words contain each pair.
 A Hypothesis differential test asserts they produce identical merge tables. The
 slow implementation is correct by inspection and certifies the fast one.
 
-Pre-tokenization uses `tiktoken`'s cl100k_base split pattern verbatim, which
-adds `regex` as a runtime dependency for `\p{L}` and `\p{N}` support.
+Pre-tokenization uses cl100k_base's split pattern, semantically equivalent to
+tiktoken's, with the first branch enumerated rather than factored, which adds
+`regex` as a runtime dependency for `\p{L}` and `\p{N}` support.
 
 **Alternatives considered.**
 - *A `str`-only API with strict UTF-8.* Mirrors `tiktoken`'s public surface and

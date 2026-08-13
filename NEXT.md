@@ -28,6 +28,16 @@ serialization, and the `tokenizer train` CLI verb. `make check` green.
   its sha256. Do not switch to a streaming trainer: chunking at arbitrary
   boundaries splits pre-tokens and perturbs the pair counts. Decided by
   measurement, not now.
+- **`encode` is quadratic in chunk length, and `pretokenize` imposes no
+  ceiling on chunk length.** Measured on a tokenizer that actually merges the
+  repeated byte, single-chunk inputs: 2 KB, 0.085s; 8 KB, 1.662s; 32 KB,
+  22.716s; 128 KB, 364.1s. Roughly 16x cost per 4x input, i.e. quadratic. The
+  design spec's premise that "chunks are short by construction, so the
+  quadratic inner loop is bounded" (section 5.3) does not hold: `\p{L}+`,
+  `\s+`, and `[^\s\p{L}\p{N}]+` all match unbounded runs. No shipped path
+  reaches this today (`tokenizer train` never calls `encode`); the data
+  pipeline is the first that will, since it calls `encode` on the entire
+  corpus.
 
 ## Open decision, deferred until calibration produces real numbers
 
