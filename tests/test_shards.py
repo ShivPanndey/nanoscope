@@ -358,9 +358,12 @@ def test_open_rejects_a_tokenizer_that_does_not_match_the_manifests_digest(
 
 
 def test_the_raw_constructor_is_not_the_public_entry_point(tmp_path: Path) -> None:
-    """`ShardedTokens()` builds an empty, unusable instance rather than
-    accepting `(shard_dir, entries, split)` directly -- the only public way
-    to get a populated instance is `open()`, which performs the digest
-    check. This is a deliberate design constraint, not an oversight."""
-    empty = ShardedTokens()
-    assert len(empty) == 0
+    """The old `(shard_dir, entries, split)` signature is gone from the public
+    constructor entirely, not just discouraged: `ShardedTokens()` takes no
+    arguments, so calling it the old way raises `TypeError` before any shard
+    file is ever touched. The only public way to get a populated instance is
+    `open()`, which performs the digest check."""
+    with pytest.raises(TypeError):
+        ShardedTokens(tmp_path, [], "train")  # type: ignore[call-arg]
+
+    assert len(ShardedTokens()) == 0

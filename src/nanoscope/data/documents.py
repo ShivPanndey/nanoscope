@@ -1,13 +1,16 @@
 """The document reader: the `Iterator[bytes]` seam the rest of the pipeline is
 built around.
 
-Design spec section 4: `encode` is chunk-local, and a document boundary is
-always a chunk boundary, because `\\s*[\\r\\n]+` is one of the split pattern's
-alternatives. That makes a newline a safe place to cut a corpus -- encoding a
-document in isolation gives exactly the ids it would get inside the whole
-corpus. **No other byte offset carries that guarantee**, so this reader never
-buffers or seeks past one; it only ever cuts at a `\\n` byte, one line at a
-time, and never holds the file in memory.
+Design spec section 4: a document boundary is **not always** a chunk boundary
+-- `pretokenize` sometimes absorbs a trailing newline into the chunk before
+it rather than isolating it as its own chunk. What actually makes `\\n` a
+safe place to cut a corpus is narrower: it is the document delimiter, and
+this reader hands each document to the tokenizer on its own, never joined to
+a neighbour's bytes, so no chunk downstream of this reader can ever span
+from one document's content into the next. **No other byte offset carries
+that guarantee**, so this reader never buffers or seeks past one; it only
+ever cuts at a `\\n` byte, one line at a time, and never holds the file in
+memory.
 """
 
 from collections.abc import Iterator

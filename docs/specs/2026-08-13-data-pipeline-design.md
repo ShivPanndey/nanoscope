@@ -67,8 +67,12 @@ tokenizer, not to using it.
 Encoding is different, and this is what makes streaming safe. `encode` is chunk-local:
 `pretokenize` splits into chunks that BPE merges never cross, and every chunk re-splits
 to itself, both verified by Hypothesis property tests. So encoding a document in
-isolation gives exactly the ids that encoding it as part of a larger corpus would give,
-provided the split points are respected.
+isolation is well-defined and deterministic: it gives exactly the ids that same
+document, encoded on its own, would give, with no dependency on whatever else sits in
+the corpus around it. Whether those are the same ids the same bytes would get as part of
+a larger, unsplit buffer is a separate question, and in general the answer is no: a
+chunk at the very edge of a document can pretokenize differently depending on what sits
+immediately outside it. The rest of this section is about why that does not matter here.
 
 Document boundaries are safe split points, but not for the reason a first reading of
 the pattern suggests. `\s*[\r\n]+` is one of the pattern's alternatives, but it is not
@@ -88,11 +92,12 @@ offsets are not safe split points** -- cutting mid-chunk (mid-word, say) changes
 tokenization of the bytes on both sides of the cut -- which is why the pipeline streams
 documents rather than fixed-size buffers.
 
-One consequence is worth recording. `iter_documents` strips each document's trailing
-newline before yielding it, so a document ending in punctuation encodes its last chunk
-as, e.g., `!` where pretokenizing the raw, newline-included corpus would have produced
-`!\n`. The pipeline never encodes the raw corpus -- only these stripped, per-document
-byte strings -- so this is internally self-consistent. But the tokenizer is trained on
+One consequence is worth recording -- the concrete case of the "answer is no" above.
+`iter_documents` strips each document's trailing newline before yielding it, so a
+document ending in punctuation encodes its last chunk as, e.g., `!` where pretokenizing
+the raw, newline-included corpus would have produced `!\n`. The pipeline never encodes
+the raw corpus -- only these stripped, per-document byte strings -- so this is
+internally self-consistent. But the tokenizer is trained on
 corpus text, not on this pipeline's stripped documents. If the tokenizer is trained on
 raw corpus bytes while this pipeline encodes document-wise, the merge table will contain
 `<punct>\n` merges that encoding here can never fire, wasting vocabulary slots and

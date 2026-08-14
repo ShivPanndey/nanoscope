@@ -1,10 +1,13 @@
 """Tests for document iteration: the seam between a corpus file and the
 tokenizer.
 
-Design spec section 4: `encode` is chunk-local and a document boundary is
-always a chunk boundary, because `\\s*[\\r\\n]+` is one of the split pattern's
-alternatives. That is what makes a newline a safe place to cut a corpus, and
-why nothing here may split at an arbitrary byte offset instead.
+Design spec section 4: a document boundary is **not always** a chunk boundary
+-- `pretokenize` sometimes absorbs a trailing newline into the preceding
+chunk rather than isolating it. What makes `\\n` a safe place to cut a
+corpus is narrower: each document `iter_documents` yields is handed to the
+tokenizer on its own, never joined to a neighbour's bytes, so no chunk can
+span from one document's content into the next. That is why nothing here
+may split at an arbitrary byte offset instead.
 """
 
 import tempfile

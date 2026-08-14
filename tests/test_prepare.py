@@ -253,9 +253,15 @@ def test_a_document_with_an_overlong_chunk_is_rejected_and_named(tmp_path: Path)
 
 
 def test_max_chunk_bytes_observed_is_recorded_on_the_manifest(tmp_path: Path) -> None:
+    """The longest chunk sits in the *middle* document, not the last one, so
+    a running-max implementation and a bug that only records the last
+    document's max would disagree: the former reports 7 (from the middle
+    document's "-longer" chunk), the latter would report 4 (the last
+    document's "tiny", the whole of one chunk).
+    """
     tokenizer_path = tmp_path / "tokenizer.json"
     _write_tokenizer(tokenizer_path)
-    docs = [b"short", b"a-much-longer-chunk-here"]
+    docs = [b"short", b"a-much-longer-chunk-here", b"tiny"]
     source = tmp_path / "corpus.txt"
     _write_corpus(source, docs)
     output_dir = tmp_path / "out"
@@ -269,7 +275,7 @@ def test_max_chunk_bytes_observed_is_recorded_on_the_manifest(tmp_path: Path) ->
         shard_tokens=1_000_000,
         max_chunk_bytes=999,
     )
-    assert manifest.max_chunk_bytes_observed == 7  # the "-longer" chunk
+    assert manifest.max_chunk_bytes_observed == 7  # the "-longer" chunk, middle document
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +331,36 @@ def test_val_fraction_one_puts_everything_in_val_with_no_train_shards(tmp_path: 
     assert train_reader.window(0, 0).shape == (0,)
 
 
+def test_a_small_positive_val_fraction_still_gets_at_least_one_val_document(
+    tmp_path: Path,
+) -> None:
+    """`round(100 * 0.005) == 0`, and Python's banker's rounding makes small
+    fractions worse (`round(1 * 0.5) == 0` too), so a naive `round` alone
+    would silently give a caller who asked for 0.5% validation data an empty
+    validation split. `val_fraction > 0.0` must mean "at least one document
+    ends up in val," not "probably some do."
+    """
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    docs = [f"doc-{i}".encode() for i in range(100)]
+    source = tmp_path / "corpus.txt"
+    _write_corpus(source, docs)
+    output_dir = tmp_path / "out"
+
+    manifest = prepare(
+        source=source,
+        tokenizer_path=tokenizer_path,
+        output_dir=output_dir,
+        seed=0,
+        val_fraction=0.005,
+        shard_tokens=1_000_000,
+    )
+
+    val_reader = ShardedTokens._from_entries(output_dir, manifest.shards, "val")
+    assert len(val_reader) > 0
+    assert any(entry.split == "val" for entry in manifest.shards)
+
+
 def test_val_fraction_outside_zero_one_is_rejected(tmp_path: Path) -> None:
     tokenizer_path = tmp_path / "tokenizer.json"
     _write_tokenizer(tokenizer_path)
@@ -370,6 +406,8 @@ def test_manifest_records_the_run_parameters_and_digests(tmp_path: Path) -> None
     assert manifest.source_sha256 == sha256_file(source)
     assert manifest.seed == 3
     assert manifest.val_fraction == 0.5
+    assert manifest.limit is None
+    assert manifest.max_chunk_bytes == 999
     assert manifest.nanoscope_version == nanoscope.__version__
     assert 0 < manifest.max_chunk_bytes_observed <= 999
     assert Manifest.load(output_dir / "manifest.json") == manifest
@@ -396,6 +434,10 @@ def test_limit_caps_the_number_of_documents_processed(tmp_path: Path) -> None:
     reader = ShardedTokens._from_entries(output_dir, manifest.shards, "train")
     ids = reader.window(0, len(reader)).tolist()
     assert ids.count(END_OF_TEXT_ID) == 3
+    # Recorded so the split is reproducible from the manifest alone (design
+    # spec section 6): re-deriving the split needs to know how many documents
+    # were actually processed, not how many `source` contains.
+    assert manifest.limit == 3
 
 
 def test_output_dir_is_created_if_it_does_not_exist(tmp_path: Path) -> None:

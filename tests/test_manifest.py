@@ -19,6 +19,8 @@ def _valid_manifest() -> Manifest:
         source_sha256="b" * 64,
         seed=7,
         val_fraction=0.1,
+        limit=1000,
+        max_chunk_bytes=1024,
         max_chunk_bytes_observed=54,
         nanoscope_version=nanoscope.__version__,
         shards=[
@@ -37,6 +39,8 @@ def _valid_manifest_json() -> dict[str, object]:
         "source_sha256": "b" * 64,
         "seed": 7,
         "val_fraction": 0.1,
+        "limit": 1000,
+        "max_chunk_bytes": 1024,
         "max_chunk_bytes_observed": 54,
         "nanoscope_version": nanoscope.__version__,
         "shards": [
@@ -50,6 +54,25 @@ def test_a_saved_manifest_round_trips_through_json(tmp_path: Path) -> None:
     path = tmp_path / "manifest.json"
     original.save(path)
     assert Manifest.load(path) == original
+
+
+def test_a_manifest_written_before_limit_and_max_chunk_bytes_existed_still_loads(
+    tmp_path: Path,
+) -> None:
+    """`limit` and `max_chunk_bytes` are optional fields added after this
+    manifest shape was first shipped. A file that predates them (neither key
+    present at all, not even `null`) must still load, defaulting both to
+    `None` rather than being rejected as unrecognized or malformed.
+    """
+    fields = _valid_manifest_json()
+    del fields["limit"]
+    del fields["max_chunk_bytes"]
+    path = tmp_path / "pre-existing-fields.json"
+    path.write_text(json.dumps(fields), encoding="utf-8")
+
+    manifest = Manifest.load(path)
+    assert manifest.limit is None
+    assert manifest.max_chunk_bytes is None
 
 
 def test_load_rejects_a_file_with_an_unknown_field(tmp_path: Path) -> None:

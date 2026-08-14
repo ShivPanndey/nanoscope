@@ -51,6 +51,23 @@ class Manifest(BaseModel):
     source_sha256: str
     seed: int
     val_fraction: float
+    # `None` means "no limit was applied": every document `source` contains was
+    # processed. Recording this is what makes design spec section 6's claim --
+    # "the split is reproducible from the manifest alone" -- actually true for a
+    # `--limit`ed run: the split depends on the document count actually
+    # processed, not on `source`'s full document count, and `source_sha256`
+    # alone cannot distinguish the two. Optional so a manifest predating this
+    # field still loads.
+    limit: int | None = None
+    # The configured ceiling `prepare` was run with, and the running maximum it
+    # actually observed. Recording the configured value, not just what was
+    # observed, matters for the same reason as `limit`: without it, a reader
+    # cannot tell whether `max_chunk_bytes_observed` reflects "nothing came
+    # close to the ceiling" or "the ceiling itself was unusually high or low"
+    # -- nor, combined with `limit`, whether it was measured over the whole
+    # corpus or only a processed subset of it. Optional for the same
+    # backward-compatibility reason as `limit`.
+    max_chunk_bytes: int | None = None
     max_chunk_bytes_observed: int
     nanoscope_version: str
     shards: list[ShardEntry]
