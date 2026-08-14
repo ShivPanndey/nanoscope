@@ -24,7 +24,7 @@ from typing import BinaryIO, Literal
 import numpy as np
 import numpy.typing as npt
 
-from nanoscope.data.manifest import ShardEntry, sha256_file
+from nanoscope.data.manifest import Manifest, ShardEntry, sha256_file
 
 # Headerless little-endian uint16, per design spec section 7. The explicit
 # "<" is load-bearing: plain `np.uint16` is numpy's native byte order, which
@@ -131,24 +131,78 @@ class ShardedTokens:
 
     `window(start, length)` returns the ids in `[start, start + length)`,
     concatenating across shard files as needed, so a caller never learns
-    where a shard boundary falls. `entries` may hold both splits' shards
-    (e.g. a manifest's full `shards` list); only the ones matching `split`
-    are opened.
+    where a shard boundary falls.
+
+    `ShardedTokens()` takes no arguments and builds an empty instance;
+    `open()` is the only public way to get a populated one. Design spec
+    section 8 requires that opening a split first verifies the manifest's
+    tokenizer digest against the tokenizer the caller holds, and refuses on
+    a mismatch -- training on shards produced by a different tokenizer is a
+    silent-garbage failure, not a loud one. Putting that check behind a
+    classmethod that sits *next to* a constructor which still accepts raw
+    `entries` would make the check optional in practice: a guard a caller
+    can route around by calling the constructor directly is a guard callers
+    will route around. So the raw, unchecked path (`_from_entries`) is
+    private, for this module's own use inside `open()` and for tests that
+    want to exercise shard mechanics without building a `Manifest` and a
+    tokenizer file for every case.
     """
 
-    def __init__(
-        self,
+    def __init__(self) -> None:
+        self._shards: list[npt.NDArray[np.uint16]] = []
+        self._lengths: list[int] = []
+        self._offsets: list[int] = [0]
+        self._length = 0
+
+    @classmethod
+    def open(
+        cls,
+        manifest_path: Path,
+        tokenizer_path: Path,
+        split: Literal["train", "val"],
+    ) -> "ShardedTokens":
+        """Load the manifest at `manifest_path`, verify that `tokenizer_path`
+        is the same tokenizer file it was produced with, and only then open
+        `split`'s shards (found alongside the manifest, per design spec
+        section 7's on-disk layout).
+
+        Raises `ValueError` naming both digests if `tokenizer_path`'s sha256
+        does not match `manifest.tokenizer_sha256`. Raises whatever
+        `Manifest.load` or `sha256_file` raise for a missing or malformed
+        file.
+        """
+        manifest = Manifest.load(manifest_path)
+        actual_digest = sha256_file(tokenizer_path)
+        if actual_digest != manifest.tokenizer_sha256:
+            raise ValueError(
+                f"tokenizer digest mismatch: manifest {manifest_path} was produced "
+                f"with a tokenizer whose sha256 is {manifest.tokenizer_sha256}, but "
+                f"{tokenizer_path} has sha256 {actual_digest}"
+            )
+        return cls._from_entries(manifest_path.parent, manifest.shards, split)
+
+    @classmethod
+    def _from_entries(
+        cls,
         shard_dir: Path,
         entries: Sequence[ShardEntry],
         split: Literal["train", "val"],
-    ) -> None:
+    ) -> "ShardedTokens":
+        """Open `entries` directly against `shard_dir`, skipping the
+        manifest/tokenizer check `open()` performs. Private: no production
+        code path should reach for this, since it is exactly the bypass
+        `open()` exists to close off. Kept for `open()`'s own use and for
+        tests that only need shard mechanics (seams, windows, dtype), not
+        tokenizer provenance.
+        """
+        self = cls()
         # Sorted by name so shard N always precedes shard N+1 regardless of
         # the order `entries` arrived in (e.g. a manifest's shards list,
         # which interleaves both splits in write order).
         split_entries = sorted(
             (entry for entry in entries if entry.split == split), key=lambda e: e.name
         )
-        self._shards: list[npt.NDArray[np.uint16]] = [
+        self._shards = [
             np.memmap(shard_dir / entry.name, dtype=DTYPE, mode="r", shape=(entry.tokens,))
             for entry in split_entries
         ]
@@ -157,6 +211,7 @@ class ShardedTokens:
         for shard_length in self._lengths:
             self._offsets.append(self._offsets[-1] + shard_length)
         self._length = self._offsets[-1]
+        return self
 
     def __len__(self) -> int:
         return self._length

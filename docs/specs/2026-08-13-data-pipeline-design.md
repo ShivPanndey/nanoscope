@@ -70,10 +70,34 @@ to itself, both verified by Hypothesis property tests. So encoding a document in
 isolation gives exactly the ids that encoding it as part of a larger corpus would give,
 provided the split points are respected.
 
-Document boundaries are safe split points because documents are separated in the source
-by a newline, and `\s*[\r\n]+` is one of the pattern's alternatives, so a boundary is
-always a chunk boundary. **Arbitrary byte offsets are not safe split points**, which is
-why the pipeline streams documents rather than fixed-size buffers.
+Document boundaries are safe split points, but not for the reason a first reading of
+the pattern suggests. `\s*[\r\n]+` is one of the pattern's alternatives, but it is not
+the only one that can consume a trailing newline: `pretokenize(b'hello!\n')` gives
+`[b'hello', b'!\n']`, with the newline absorbed by the punctuation alternative
+(`[^\s\p{L}\p{N}]?...` combined with `[\r\n]*`) rather than isolated by `\s*[\r\n]+`. So
+a document boundary is **not always** a chunk boundary in that literal sense.
+
+What actually makes the split safe is narrower, and it does hold: `iter_documents` never
+presents two documents' bytes to `pretokenize` at once, so no chunk ever spans one
+document's content into the next. Each document is pretokenized as its own isolated
+`bytes` object, and `pretokenize` has no lookahead past the end of its input, so nothing
+from a neighbouring document can leak into a boundary document's last chunk. That is the
+property this pipeline actually depends on, and it holds by construction, independent of
+which pattern alternative happens to consume the trailing newline. **Arbitrary byte
+offsets are not safe split points** -- cutting mid-chunk (mid-word, say) changes the
+tokenization of the bytes on both sides of the cut -- which is why the pipeline streams
+documents rather than fixed-size buffers.
+
+One consequence is worth recording. `iter_documents` strips each document's trailing
+newline before yielding it, so a document ending in punctuation encodes its last chunk
+as, e.g., `!` where pretokenizing the raw, newline-included corpus would have produced
+`!\n`. The pipeline never encodes the raw corpus -- only these stripped, per-document
+byte strings -- so this is internally self-consistent. But the tokenizer is trained on
+corpus text, not on this pipeline's stripped documents. If the tokenizer is trained on
+raw corpus bytes while this pipeline encodes document-wise, the merge table will contain
+`<punct>\n` merges that encoding here can never fire, wasting vocabulary slots and
+skewing the compression comparison against `tiktoken`. Whichever task trains the corpus
+tokenizer must train it on this same document-wise convention, or record why not.
 
 ## 5. The quadratic encode hazard
 

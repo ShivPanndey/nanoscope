@@ -19,8 +19,10 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from nanoscope.data.manifest import ShardEntry, sha256_file
+import nanoscope
+from nanoscope.data.manifest import Manifest, ShardEntry, sha256_file
 from nanoscope.data.shards import ShardedTokens, ShardWriter
+from nanoscope.tokenizer import Tokenizer
 
 # ---------------------------------------------------------------------------
 # ShardWriter
@@ -75,7 +77,7 @@ def test_rollover_is_correct_even_when_a_single_write_call_spans_two_shards(
     writer.write([3, 4, 5, 6, 7])  # fills shard 0, then all of shard 1
     entries = writer.close()
     assert [e.tokens for e in entries] == [4, 4]
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     np.testing.assert_array_equal(reader.window(0, 8), np.arange(8, dtype=np.uint16))
 
 
@@ -173,7 +175,7 @@ def _write_ramp(
 
 def test_a_window_within_a_single_shard_matches_the_unsharded_array(tmp_path: Path) -> None:
     entries = _write_ramp(tmp_path, "train", count=20, shard_tokens=4)
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     reference = np.arange(20, dtype=np.uint16)
     np.testing.assert_array_equal(reader.window(1, 2), reference[1:3])
 
@@ -188,7 +190,7 @@ def test_window_straddling_each_seam_matches_the_unsharded_array(tmp_path: Path)
     count = 20
     entries = _write_ramp(tmp_path, "train", count=count, shard_tokens=shard_tokens)
     assert len(entries) == 5  # 20 / 4, confirms the ramp spans >= 3 shards
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     reference = np.arange(count, dtype=np.uint16)
 
     seams = [shard_tokens * i for i in range(1, len(entries))]  # [4, 8, 12, 16]
@@ -206,7 +208,7 @@ def test_a_window_spanning_an_entire_shard_matches_the_unsharded_array(
 ) -> None:
     shard_tokens = 4
     entries = _write_ramp(tmp_path, "train", count=20, shard_tokens=shard_tokens)
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     reference = np.arange(20, dtype=np.uint16)
     # Starts one before shard 1 (offset 4) and ends one past its end (offset 8):
     # covers all of shard 1 plus one token from each neighbour.
@@ -226,7 +228,7 @@ def test_window_over_random_bounds_matches_the_unsharded_array() -> None:
         shard_dir = Path(tmp_dir)
         count = 37
         entries = _write_ramp(shard_dir, "train", count=count, shard_tokens=5)
-        reader = ShardedTokens(shard_dir, entries, "train")
+        reader = ShardedTokens._from_entries(shard_dir, entries, "train")
         reference = np.arange(count, dtype=np.uint16)
 
         @given(data=st.data())
@@ -241,7 +243,7 @@ def test_window_over_random_bounds_matches_the_unsharded_array() -> None:
 
 def test_a_zero_length_window_returns_an_empty_array(tmp_path: Path) -> None:
     entries = _write_ramp(tmp_path, "train", count=10, shard_tokens=4)
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     result = reader.window(3, 0)
     assert result.shape == (0,)
     assert result.dtype == np.uint16
@@ -249,28 +251,28 @@ def test_a_zero_length_window_returns_an_empty_array(tmp_path: Path) -> None:
 
 def test_a_zero_length_window_at_the_very_end_is_valid(tmp_path: Path) -> None:
     entries = _write_ramp(tmp_path, "train", count=10, shard_tokens=4)
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     result = reader.window(10, 0)
     assert result.shape == (0,)
 
 
 def test_a_window_running_past_the_end_raises(tmp_path: Path) -> None:
     entries = _write_ramp(tmp_path, "train", count=10, shard_tokens=4)
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     with pytest.raises(ValueError, match="10"):
         reader.window(8, 3)
 
 
 def test_a_negative_start_raises(tmp_path: Path) -> None:
     entries = _write_ramp(tmp_path, "train", count=10, shard_tokens=4)
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     with pytest.raises(ValueError, match="start"):
         reader.window(-1, 1)
 
 
 def test_a_negative_length_raises(tmp_path: Path) -> None:
     entries = _write_ramp(tmp_path, "train", count=10, shard_tokens=4)
-    reader = ShardedTokens(tmp_path, entries, "train")
+    reader = ShardedTokens._from_entries(tmp_path, entries, "train")
     with pytest.raises(ValueError, match="length"):
         reader.window(0, -1)
 
@@ -287,8 +289,8 @@ def test_shardedtokens_only_reads_shards_belonging_to_the_requested_split(
     val_entries = val_writer.close()
 
     all_entries = train_entries + val_entries
-    train_reader = ShardedTokens(tmp_path, all_entries, "train")
-    val_reader = ShardedTokens(tmp_path, all_entries, "val")
+    train_reader = ShardedTokens._from_entries(tmp_path, all_entries, "train")
+    val_reader = ShardedTokens._from_entries(tmp_path, all_entries, "val")
 
     assert len(train_reader) == 10
     assert len(val_reader) == 6
@@ -297,6 +299,68 @@ def test_shardedtokens_only_reads_shards_belonging_to_the_requested_split(
 
 
 def test_a_split_with_no_shards_has_length_zero(tmp_path: Path) -> None:
-    reader = ShardedTokens(tmp_path, [], "train")
+    reader = ShardedTokens._from_entries(tmp_path, [], "train")
     assert len(reader) == 0
     assert reader.window(0, 0).shape == (0,)
+
+
+# ---------------------------------------------------------------------------
+# ShardedTokens.open -- design spec section 8's tokenizer-digest check
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest_and_shards(tmp_path: Path, tokenizer_path: Path) -> Path:
+    """A minimal end-to-end fixture: a tokenizer file, one train shard, and a
+    manifest naming the tokenizer's real sha256. Returns the manifest path."""
+    Tokenizer([]).save(tokenizer_path)
+    writer = ShardWriter(tmp_path, "train", shard_tokens=10)
+    writer.write([1, 2, 3])
+    entries = writer.close()
+    manifest = Manifest(
+        tokenizer_sha256=sha256_file(tokenizer_path),
+        source_sha256="a" * 64,
+        seed=0,
+        val_fraction=0.0,
+        max_chunk_bytes_observed=1,
+        nanoscope_version=nanoscope.__version__,
+        shards=entries,
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest.save(manifest_path)
+    return manifest_path
+
+
+def test_open_with_the_matching_tokenizer_reads_the_same_data_as_from_entries(
+    tmp_path: Path,
+) -> None:
+    tokenizer_path = tmp_path / "tokenizer.json"
+    manifest_path = _write_manifest_and_shards(tmp_path, tokenizer_path)
+    manifest = Manifest.load(manifest_path)
+
+    opened = ShardedTokens.open(manifest_path, tokenizer_path, "train")
+    raw = ShardedTokens._from_entries(tmp_path, manifest.shards, "train")
+    np.testing.assert_array_equal(opened.window(0, 3), raw.window(0, 3))
+
+
+def test_open_rejects_a_tokenizer_that_does_not_match_the_manifests_digest(
+    tmp_path: Path,
+) -> None:
+    tokenizer_path = tmp_path / "tokenizer.json"
+    manifest_path = _write_manifest_and_shards(tmp_path, tokenizer_path)
+
+    # A different tokenizer file: same class, different (empty vs. one that
+    # carries a corpus digest) content, so a different sha256 on disk.
+    other_tokenizer_path = tmp_path / "other-tokenizer.json"
+    Tokenizer([], corpus_sha256="c" * 64).save(other_tokenizer_path)
+
+    with pytest.raises(ValueError, match="tokenizer digest mismatch"):
+        ShardedTokens.open(manifest_path, other_tokenizer_path, "train")
+
+
+def test_the_raw_constructor_is_not_the_public_entry_point(tmp_path: Path) -> None:
+    """`ShardedTokens()` builds an empty, unusable instance rather than
+    accepting `(shard_dir, entries, split)` directly -- the only public way
+    to get a populated instance is `open()`, which performs the digest
+    check. This is a deliberate design constraint, not an oversight."""
+    empty = ShardedTokens()
+    assert len(empty) == 0
