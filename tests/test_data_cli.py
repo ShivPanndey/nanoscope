@@ -82,7 +82,13 @@ def test_prep_writes_a_loadable_shard_set_whose_manifest_round_trips(tmp_path: P
 
     total_tokens = sum(entry.tokens for entry in manifest.shards)
     assert total_tokens == len(train) + len(val)
-    assert str(total_tokens) in result.output
+    # Pinned to the exact wording the CLI prints, and to each split
+    # individually: a bare `str(total_tokens)` substring can also match
+    # inside the printed tokenizer sha256, and asserting only the total
+    # cannot catch the two counts being swapped or filtered backwards.
+    assert f"{len(train)} train tokens" in result.output
+    assert f"{len(val)} val tokens" in result.output
+    assert f"{total_tokens} total tokens" in result.output
 
 
 def test_prep_respects_limit(tmp_path: Path) -> None:
@@ -123,7 +129,14 @@ def test_prep_respects_limit(tmp_path: Path) -> None:
 
 
 def test_data_group_shows_help_rather_than_erroring() -> None:
+    """Pins the exit code, not just the presence of "prep" in the output:
+    without it, this test would equally pass if `data` broke and its
+    traceback happened to mention the word "prep" somewhere. Click's
+    `no_args_is_help=True` exits 2 for a bare group invocation even though
+    it is displaying help rather than reporting a usage error -- the same
+    code `tokenizer` (with the same setting) exits for the same reason."""
     result = runner.invoke(app, ["data"])
+    assert result.exit_code == 2
     assert "prep" in result.output
 
 
@@ -149,8 +162,12 @@ def test_a_missing_source_file_fails_fast_with_a_named_error(tmp_path: Path) -> 
 
     assert result.exit_code == 2
     squashed = _squash(result.output)
-    assert "invalidvaluefor" in squashed
-    assert "source" in squashed
+    # The adjacent form, not "source" alone: pytest's `tmp_path` basename is
+    # the test function name truncated to 30 characters, and this test's
+    # name contains "source" too, so a bare `"source" in squashed` passes
+    # even if `--source` and `--tokenizer`'s validators were swapped. Only
+    # the run-together form pins which option Typer actually named.
+    assert "invalidvalueforsource" in squashed
     assert "doesnotexist" in squashed
     assert not output.exists()
 
@@ -177,8 +194,7 @@ def test_a_missing_tokenizer_file_fails_fast_with_a_named_error(tmp_path: Path) 
 
     assert result.exit_code == 2
     squashed = _squash(result.output)
-    assert "invalidvaluefor" in squashed
-    assert "tokenizer" in squashed
+    assert "invalidvaluefortokenizer" in squashed
     assert "doesnotexist" in squashed
     assert not output.exists()
 
@@ -206,8 +222,7 @@ def test_a_source_path_that_is_an_existing_directory_fails_fast(tmp_path: Path) 
 
     assert result.exit_code == 2
     squashed = _squash(result.output)
-    assert "invalidvaluefor" in squashed
-    assert "source" in squashed
+    assert "invalidvalueforsource" in squashed
     assert "directory" in squashed
     assert not output.exists()
 
@@ -235,8 +250,7 @@ def test_a_tokenizer_path_that_is_an_existing_directory_fails_fast(tmp_path: Pat
 
     assert result.exit_code == 2
     squashed = _squash(result.output)
-    assert "invalidvaluefor" in squashed
-    assert "tokenizer" in squashed
+    assert "invalidvaluefortokenizer" in squashed
     assert "directory" in squashed
     assert not output.exists()
 
@@ -268,8 +282,54 @@ def test_an_output_path_that_is_an_existing_file_fails_before_preparing(tmp_path
 
     assert result.exit_code == 2
     squashed = _squash(result.output)
-    assert "invalidvaluefor" in squashed
-    assert "output" in squashed
+    assert "invalidvalueforoutput" in squashed
+
+
+def test_an_output_path_whose_nearest_existing_ancestor_is_unwritable_fails_before_preparing(
+    tmp_path: Path,
+) -> None:
+    """`prepare` reads the whole tokenizer and corpus, computing both their
+    sha256 digests, before it ever calls `output_dir.mkdir(...)`. Without a
+    dedicated check, an unwritable destination would only surface as a bare
+    `PermissionError` traceback after that whole-corpus read -- the same
+    defect shape `tokenizer train`'s `--output` review round already fixed
+    once, just one layer further in.
+
+    `typer.Option(..., writable=True)` cannot catch this either, since
+    click's writability check only runs when the path already exists, and a
+    fresh `--output` directory commonly does not.
+    """
+    source = tmp_path / "corpus.txt"
+    _write_corpus(source, 5)
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    readonly_parent = tmp_path / "readonly"
+    readonly_parent.mkdir()
+    output = readonly_parent / "shards"
+
+    readonly_parent.chmod(0o500)
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "data",
+                "prep",
+                "--source",
+                str(source),
+                "--tokenizer",
+                str(tokenizer_path),
+                "--output",
+                str(output),
+            ],
+        )
+    finally:
+        readonly_parent.chmod(0o700)
+
+    assert result.exit_code == 2, result.output
+    squashed = _squash(result.output)
+    assert "invalidvalueforoutput" in squashed
+    assert "notwritable" in squashed
+    assert not output.exists()
 
 
 def test_a_val_fraction_above_one_is_rejected(tmp_path: Path) -> None:
@@ -429,19 +489,21 @@ def test_a_zero_limit_is_rejected(tmp_path: Path) -> None:
 
 
 def test_an_over_long_chunk_is_rejected_and_writes_nothing_new(tmp_path: Path) -> None:
-    """`prepare` itself raises here (design spec section 5); the CLI must
-    surface that as a clean exit 2 rather than a traceback, and must not
-    leave partial shard files where the caller would find them by name.
+    """`prepare` itself raises here (design spec section 5): a `ValueError`
+    naming the document and the observed length. The CLI's own
+    `except ValueError` block -- the only error-handling code this verb adds
+    -- must turn that into a clean exit 2 naming both, not let it surface as
+    an uncaught traceback (which would also be a nonzero, non-2 exit code,
+    so `exit_code != 0` alone cannot tell the two apart).
 
     `--output` is a directory `prepare` creates as part of its own work, so
     "writes nothing" cannot mean the directory never exists: `prepare`
-    creates it (and rolls a shard partway) before it discovers the
-    over-long document, since a corpus is only scanned once, in document
-    order. What matters is that no shard file bears a name a later `data
-    prep` run would treat as trustworthy: this test only asserts that the
-    directory is left as debris, not as a manifest-endorsed artifact -- no
-    `manifest.json` is written, so nothing in `output` claims to be a valid
-    shard set.
+    creates it before it discovers the over-long document, since a corpus
+    is only scanned once, in document order. What matters is that no shard
+    file bears a name a later `data prep` run would treat as trustworthy.
+    The corpus here has this as its only, first document, so no
+    `ShardWriter` ever opens a shard file before the raise: the directory
+    is left completely empty, not just manifest-less.
     """
     source = tmp_path / "corpus.txt"
     over_long = b"x" * 2000
@@ -464,5 +526,9 @@ def test_an_over_long_chunk_is_rejected_and_writes_nothing_new(tmp_path: Path) -
         ],
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 2, result.output
+    squashed = _squash(result.output)
+    assert "document0" in squashed
+    assert "maxchunkbytes1024" in squashed
     assert not (output / "manifest.json").exists()
+    assert list(output.iterdir()) == []

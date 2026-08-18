@@ -41,6 +41,21 @@ from nanoscope.tokenizer.vocab import END_OF_TEXT_ID
 # input, not a tuning parameter -- see section 5.2 for the full reasoning.
 DEFAULT_MAX_CHUNK_BYTES = 1024
 
+# No measurement backs this default yet -- unlike DEFAULT_MAX_CHUNK_BYTES
+# above, no real TinyStories document count exists until the gated corpus
+# task runs it. 1% is a conventional small held-out fraction for a
+# language-modeling split, chosen rather than derived. Revisit once that
+# task measures how many documents 1% actually holds out.
+DEFAULT_VAL_FRACTION = 0.01
+
+# Also unmeasured. 10,000,000 `uint16` tokens is about 19 MiB per shard on
+# disk, a value chosen to trade resume granularity (a failed run resumes at
+# the last complete shard, so smaller shards resume finer-grained) against
+# file count (larger shards mean fewer files for `ShardedTokens.open` to
+# `mmap`). Revisit once the gated corpus task measures the real token count
+# this pipeline will actually write, and set this from that measurement.
+DEFAULT_SHARD_TOKENS = 10_000_000
+
 
 def _limited(documents: Iterable[bytes], limit: int | None) -> Iterable[bytes]:
     return documents if limit is None else islice(documents, limit)

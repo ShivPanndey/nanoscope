@@ -5,15 +5,20 @@ honest matters: a verb appears only once the thing behind it actually works.
 """
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
 
 from nanoscope import __version__
-from nanoscope.data import prepare
 from nanoscope.data.manifest import Manifest
-from nanoscope.data.prepare import DEFAULT_MAX_CHUNK_BYTES
+from nanoscope.data.prepare import (
+    DEFAULT_MAX_CHUNK_BYTES,
+    DEFAULT_SHARD_TOKENS,
+    DEFAULT_VAL_FRACTION,
+    prepare,
+)
 from nanoscope.tokenizer import Tokenizer, train
 from nanoscope.tokenizer.vocab import DEFAULT_VOCAB_SIZE, FIRST_MERGE_ID
 
@@ -104,6 +109,30 @@ def _tokens_in_split(manifest: Manifest, split: Literal["train", "val"]) -> int:
     return sum(entry.tokens for entry in manifest.shards if entry.split == split)
 
 
+def _ensure_output_is_writable(output_dir: Path) -> None:
+    """Raise before any work starts if `output_dir` cannot be written to.
+
+    `prepare` creates `output_dir` (and any missing parents) itself via
+    `mkdir(parents=True, exist_ok=True)`, so `output_dir` itself commonly
+    does not exist yet -- that is the expected case, not an error. What has
+    to be writable is its nearest existing ancestor, since that is what
+    `mkdir(parents=True)` actually writes into; permission is inherited down
+    from there.
+
+    `typer.Option(..., writable=True)` cannot do this job: click's
+    writability check only runs when the path already exists, which is
+    false for the common case of a fresh output directory, so it silently
+    never fires. Checked here instead, so an unwritable destination is a
+    named `--output` error before `prepare` reads the whole corpus and
+    tokenizer, not a bare `PermissionError` traceback after.
+    """
+    ancestor = output_dir
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    if not os.access(ancestor, os.W_OK):
+        raise typer.BadParameter(f"{ancestor} is not writable", param_hint="--output")
+
+
 @data_app.command("prep")
 def data_prep(
     source: Annotated[
@@ -142,7 +171,7 @@ def data_prep(
             max=1.0,
             help="Fraction of documents held out for validation.",
         ),
-    ] = 0.01,
+    ] = DEFAULT_VAL_FRACTION,
     seed: Annotated[
         int,
         typer.Option("--seed", min=0, help="Seed for the document-level train/val split."),
@@ -152,7 +181,7 @@ def data_prep(
         typer.Option(
             "--shard-tokens", min=1, help="Token count per shard file before rolling over."
         ),
-    ] = 10_000_000,
+    ] = DEFAULT_SHARD_TOKENS,
     max_chunk_bytes: Annotated[
         int,
         typer.Option(
@@ -174,9 +203,10 @@ def data_prep(
     parses and validates arguments, calls it, and reports what it did.
     Every path is checked before any work starts, since a full run is
     expensive and a typo must not cost it: `--source` and `--tokenizer` must
-    already exist and be files, and `--output` must not already be an
-    existing file.
+    already exist and be files, `--output` must not already be an existing
+    file, and `--output`'s nearest existing ancestor must be writable.
     """
+    _ensure_output_is_writable(output_dir)
     try:
         manifest = prepare(
             source,
