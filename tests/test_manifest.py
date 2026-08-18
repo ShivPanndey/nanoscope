@@ -136,3 +136,41 @@ def test_sha256_file_of_an_empty_file_matches_the_empty_digest(tmp_path: Path) -
     path = tmp_path / "empty.bin"
     path.write_bytes(b"")
     assert sha256_file(path) == hashlib.sha256(b"").hexdigest()
+
+
+def test_tokens_in_sums_only_the_named_splits_shards() -> None:
+    """The sum lives on `Manifest` rather than at the call site so a caller
+    can report a split's size without holding manifest-internal knowledge of
+    how shards are laid out. Asserted per split and with unequal totals, so a
+    filter that matched the wrong split, or none, cannot pass.
+    """
+    manifest = Manifest(
+        tokenizer_sha256="a" * 64,
+        source_sha256="b" * 64,
+        seed=0,
+        val_fraction=0.25,
+        max_chunk_bytes_observed=4,
+        nanoscope_version=nanoscope.__version__,
+        shards=[
+            ShardEntry(name="train-00000.bin", split="train", tokens=10, sha256="c" * 64),
+            ShardEntry(name="val-00000.bin", split="val", tokens=3, sha256="d" * 64),
+            ShardEntry(name="train-00001.bin", split="train", tokens=7, sha256="e" * 64),
+        ],
+    )
+
+    assert manifest.tokens_in("train") == 17
+    assert manifest.tokens_in("val") == 3
+
+
+def test_tokens_in_is_zero_for_a_split_with_no_shards() -> None:
+    manifest = Manifest(
+        tokenizer_sha256="a" * 64,
+        source_sha256="b" * 64,
+        seed=0,
+        val_fraction=0.0,
+        max_chunk_bytes_observed=4,
+        nanoscope_version=nanoscope.__version__,
+        shards=[ShardEntry(name="train-00000.bin", split="train", tokens=10, sha256="c" * 64)],
+    )
+
+    assert manifest.tokens_in("val") == 0

@@ -57,6 +57,25 @@ def test_a_trailing_newline_does_not_manufacture_a_phantom_final_document(
     assert list(iter_documents(path)) == [b"only"]
 
 
+def test_a_crlf_corpus_keeps_the_carriage_return_on_every_document(
+    tmp_path: Path,
+) -> None:
+    """Pins a deliberate choice, not an oversight: `\\n` is the only
+    terminator this reader strips, so a CRLF corpus yields documents ending
+    in `\\r` and the tokenizer sees that byte.
+
+    The alternative, stripping a trailing `\\r` too, cannot be had at the
+    same time as the round-trip law below, since it would equally strip a
+    `\\r` that is genuinely a document's last byte in an LF corpus. Byte
+    exactness wins because `source_sha256` on the manifest is only meaningful
+    if the reader is faithful to the file. Converting line endings is the
+    corpus preparer's job.
+    """
+    path = tmp_path / "corpus.txt"
+    path.write_bytes(b"hello\r\nworld\r\n")
+    assert list(iter_documents(path)) == [b"hello\r", b"world\r"]
+
+
 @given(st.lists(_line_safe_bytes))
 def test_documents_terminated_by_newlines_round_trip_exactly(docs: list[bytes]) -> None:
     """Each document is written with its own trailing newline, so every line

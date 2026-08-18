@@ -72,6 +72,17 @@ class Manifest(BaseModel):
     nanoscope_version: str
     shards: list[ShardEntry]
 
+    def tokens_in(self, split: Literal["train", "val"]) -> int:
+        """Total token count for one split, summed from its shard entries.
+
+        A stored per-split total would be redundant state alongside the
+        per-shard counts that produce it, and redundant state drifts. It
+        lives here rather than at the call site so a caller can report a
+        split's size without holding knowledge of how a manifest lays its
+        shards out.
+        """
+        return sum(entry.tokens for entry in self.shards if entry.split == split)
+
     def save(self, path: Path) -> None:
         """Write this manifest to `path` as JSON.
 

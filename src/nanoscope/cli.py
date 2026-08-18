@@ -7,12 +7,11 @@ honest matters: a verb appears only once the thing behind it actually works.
 import hashlib
 import os
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
 from nanoscope import __version__
-from nanoscope.data.manifest import Manifest
 from nanoscope.data.prepare import (
     DEFAULT_MAX_CHUNK_BYTES,
     DEFAULT_SHARD_TOKENS,
@@ -97,18 +96,6 @@ data_app = typer.Typer(
 app.add_typer(data_app, name="data")
 
 
-def _tokens_in_split(manifest: Manifest, split: Literal["train", "val"]) -> int:
-    """Sum one split's token count from its shard entries.
-
-    The manifest deliberately does not store per-split totals as a field of
-    its own (see `nanoscope.data.manifest`'s docstring): a stored sum
-    alongside the per-shard counts that produce it is redundant state that
-    can drift out of sync. This is the one place that performs the sum, so
-    nothing downstream re-derives it inline.
-    """
-    return sum(entry.tokens for entry in manifest.shards if entry.split == split)
-
-
 def _ensure_output_is_writable(output_dir: Path) -> None:
     """Raise before any work starts if `output_dir` cannot be written to.
 
@@ -125,10 +112,21 @@ def _ensure_output_is_writable(output_dir: Path) -> None:
     never fires. Checked here instead, so an unwritable destination is a
     named `--output` error before `prepare` reads the whole corpus and
     tokenizer, not a bare `PermissionError` traceback after.
+
+    Being writable is not sufficient on its own: `os.access` reports a
+    regular file as writable, and `mkdir(parents=True)` under one dies with
+    `NotADirectoryError`. The ancestor has to be a directory too. The walk
+    stops at anything that exists *or is a dangling symlink*, since
+    `Path.exists()` follows symlinks and would otherwise step straight past
+    a broken one, whose `mkdir` fails with `FileExistsError`. Both were
+    live: each produced an uncaught traceback and exit 1, after the whole
+    corpus had been read and digested.
     """
     ancestor = output_dir
-    while not ancestor.exists():
+    while not (ancestor.exists() or ancestor.is_symlink()):
         ancestor = ancestor.parent
+    if not ancestor.is_dir():
+        raise typer.BadParameter(f"{ancestor} is not a directory", param_hint="--output")
     if not os.access(ancestor, os.W_OK):
         raise typer.BadParameter(f"{ancestor} is not writable", param_hint="--output")
 
@@ -222,8 +220,8 @@ def data_prep(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    train_tokens = _tokens_in_split(manifest, "train")
-    val_tokens = _tokens_in_split(manifest, "val")
+    train_tokens = manifest.tokens_in("train")
+    val_tokens = manifest.tokens_in("val")
     typer.echo(
         f"wrote {output_dir}: {len(manifest.shards)} shards, "
         f"{train_tokens} train tokens, {val_tokens} val tokens, "

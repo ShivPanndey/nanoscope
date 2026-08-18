@@ -23,10 +23,10 @@ from hypothesis import strategies as st
 
 import nanoscope
 from nanoscope.data import prepare
-from nanoscope.data.manifest import Manifest, sha256_file
-from nanoscope.data.shards import ShardedTokens
+from nanoscope.data.manifest import Manifest, ShardEntry, sha256_file
+from nanoscope.data.shards import MAX_TOKEN_ID, ShardedTokens, ShardWriter
 from nanoscope.tokenizer import Tokenizer
-from nanoscope.tokenizer.vocab import END_OF_TEXT_ID
+from nanoscope.tokenizer.vocab import END_OF_TEXT_ID, FIRST_MERGE_ID
 
 
 def _write_tokenizer(path: Path) -> Tokenizer:
@@ -69,7 +69,11 @@ def _decode_split(tokenizer: Tokenizer, reader: ShardedTokens) -> list[bytes]:
 
 
 @given(
-    document_count=st.integers(min_value=0, max_value=40),
+    # Starts at 1, not 0: an empty corpus is now a rejected input with a
+    # test of its own, and the partition law is vacuous there anyway. The
+    # property itself is not narrowed -- every count it can still draw must
+    # partition exactly.
+    document_count=st.integers(min_value=1, max_value=40),
     val_fraction=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
     seed=st.integers(min_value=0, max_value=2**31 - 1),
 )
@@ -457,3 +461,136 @@ def test_output_dir_is_created_if_it_does_not_exist(tmp_path: Path) -> None:
     )
     assert (output_dir / "manifest.json").exists()
     assert manifest.shards
+
+
+# ---------------------------------------------------------------------------
+# Inputs rejected before any work happens
+# ---------------------------------------------------------------------------
+
+
+def test_an_empty_corpus_is_rejected_rather_than_reported_as_a_successful_run(
+    tmp_path: Path,
+) -> None:
+    """An empty source used to succeed: the loop never runs, both writers
+    close empty, and a manifest with no shards is written, so `data prep`
+    printed "0 shards, 0 total tokens" and exited 0. A mistyped or truncated
+    `--source` was indistinguishable from a real run until the training split
+    turned out to be empty, much later and much further from the cause.
+
+    The rejection also happens before `mkdir`, so a bad source leaves no
+    output directory behind to be mistaken for a partial artifact.
+    """
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    source = tmp_path / "corpus.txt"
+    source.write_bytes(b"")
+    output_dir = tmp_path / "out"
+
+    with pytest.raises(ValueError, match="contains no documents"):
+        prepare(
+            source=source,
+            tokenizer_path=tokenizer_path,
+            output_dir=output_dir,
+            seed=0,
+            val_fraction=0.0,
+            shard_tokens=1_000_000,
+        )
+
+    assert not output_dir.exists()
+
+
+def test_a_vocabulary_too_large_for_uint16_is_rejected_before_any_encoding(
+    tmp_path: Path,
+) -> None:
+    """`ShardWriter.write`'s per-id range check is the backstop, but it only
+    fires on the first document that merges into a high enough rank, which on
+    a real corpus can be hours in and after shards are on disk. The
+    vocabulary size is known before a byte is encoded, and `tokenizer train`
+    puts no maximum on `--vocab-size`, so this input is reachable.
+
+    Merges pair two single-byte ids, so every vocabulary entry stays two
+    bytes long and no pair repeats (`TokenizerFile` rejects a duplicate
+    merge). The point is the count, not the contents.
+    """
+    merges = [(rank // 256, rank % 256) for rank in range(MAX_TOKEN_ID + 2 - FIRST_MERGE_ID)]
+    tokenizer_path = tmp_path / "tokenizer.json"
+    oversized = Tokenizer(merges=merges)
+    assert oversized.vocab_size == MAX_TOKEN_ID + 2
+    oversized.save(tokenizer_path)
+    source = tmp_path / "corpus.txt"
+    _write_corpus(source, [b"doc-0"])
+    output_dir = tmp_path / "out"
+
+    with pytest.raises(ValueError, match="does not fit the uint16 shard format"):
+        prepare(
+            source=source,
+            tokenizer_path=tokenizer_path,
+            output_dir=output_dir,
+            seed=0,
+            val_fraction=0.0,
+            shard_tokens=1_000_000,
+        )
+
+    assert not output_dir.exists()
+
+
+def test_a_non_positive_limit_is_rejected_as_a_limit_fault_not_an_empty_corpus(
+    tmp_path: Path,
+) -> None:
+    """The CLI bounds `--limit` at 1, but `prepare` is importable and
+    `limit=0` would otherwise be reported as "contains no documents", naming
+    the source for a fault that is in the argument.
+    """
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    source = tmp_path / "corpus.txt"
+    _write_corpus(source, [b"doc-0", b"doc-1"])
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        prepare(
+            source=source,
+            tokenizer_path=tokenizer_path,
+            output_dir=tmp_path / "out",
+            seed=0,
+            val_fraction=0.0,
+            shard_tokens=1_000_000,
+            limit=0,
+        )
+
+
+def test_both_writers_are_closed_even_when_the_first_close_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`close()` does real I/O -- it reopens each finished shard to digest it
+    -- so a full disk or a revoked mount can fail one of them. Before the
+    nested `finally`, a raising `train_writer.close()` meant `val_writer`
+    was never closed at all, leaking the very handle the block exists to
+    close.
+    """
+    closed: list[str] = []
+    original_close = ShardWriter.close
+
+    def failing_close(self: ShardWriter) -> list[ShardEntry]:
+        closed.append(self._split)
+        if self._split == "train":
+            raise OSError("no space left on device")
+        return original_close(self)
+
+    monkeypatch.setattr(ShardWriter, "close", failing_close)
+
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    source = tmp_path / "corpus.txt"
+    _write_corpus(source, [b"doc-0", b"doc-1"])
+
+    with pytest.raises(OSError, match="no space left on device"):
+        prepare(
+            source=source,
+            tokenizer_path=tokenizer_path,
+            output_dir=tmp_path / "out",
+            seed=0,
+            val_fraction=0.5,
+            shard_tokens=1_000_000,
+        )
+
+    assert closed == ["train", "val"]

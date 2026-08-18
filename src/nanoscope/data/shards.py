@@ -17,6 +17,7 @@ falls (section 8).
 """
 
 import bisect
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import BinaryIO, Literal
@@ -31,7 +32,28 @@ from nanoscope.data.manifest import Manifest, ShardEntry, sha256_file
 # is platform-dependent, and this format must be portable across machines.
 DTYPE = np.dtype("<u2")
 
-_UINT16_MAX = np.iinfo(np.uint16).max
+MAX_TOKEN_ID = int(np.iinfo(np.uint16).max)
+
+# `{split}-{index:05d}.bin`, the layout `ShardWriter._open_shard` writes.
+_SHARD_NAME = re.compile(r"^(?:train|val)-(\d+)\.bin$")
+
+
+def _shard_index(entry: ShardEntry) -> int:
+    """The integer index encoded in a shard's file name.
+
+    Raises `ValueError` naming the entry if the name is not one
+    `ShardWriter` could have produced: the alternative is to fall back to
+    some arbitrary order, and an unrecognised name means the manifest and
+    the writer disagree about the on-disk layout, which is not a condition
+    to paper over silently.
+    """
+    match = _SHARD_NAME.match(entry.name)
+    if match is None:
+        raise ValueError(
+            f"shard name {entry.name!r} is not of the form <split>-<index>.bin, "
+            "so its position in the split cannot be determined"
+        )
+    return int(match.group(1))
 
 
 class ShardWriter:
@@ -72,11 +94,11 @@ class ShardWriter:
             return
 
         ids_array = np.asarray(ids, dtype=np.int64)
-        out_of_range = np.flatnonzero((ids_array < 0) | (ids_array > _UINT16_MAX))
+        out_of_range = np.flatnonzero((ids_array < 0) | (ids_array > MAX_TOKEN_ID))
         if out_of_range.size:
             offending = int(ids_array[out_of_range[0]])
             raise ValueError(
-                f"token id {offending} does not fit in uint16 (must be in [0, {_UINT16_MAX}])"
+                f"token id {offending} does not fit in uint16 (must be in [0, {MAX_TOKEN_ID}])"
             )
         payload = ids_array.astype(DTYPE)
 
@@ -160,16 +182,32 @@ class ShardedTokens:
         manifest_path: Path,
         tokenizer_path: Path,
         split: Literal["train", "val"],
+        *,
+        verify_shards: bool = False,
     ) -> "ShardedTokens":
         """Load the manifest at `manifest_path`, verify that `tokenizer_path`
         is the same tokenizer file it was produced with, and only then open
         `split`'s shards (found alongside the manifest, per design spec
         section 7's on-disk layout).
 
+        `verify_shards` additionally re-digests every shard file in the split
+        and refuses on a mismatch. Off by default because it re-reads the
+        whole split from disk, which the training loop must not pay on every
+        open, and on because otherwise `ShardEntry.sha256` is written and
+        never used: the manifest promises shard contents can be "verified
+        without re-tokenizing anything" and until now nothing could act on
+        that promise. Worth passing after a run that failed partway, since
+        `prepare` leaves already-written shards behind as debris and a
+        partially overwritten shard set is a reachable state. Note that
+        `np.memmap` only catches a file that is *shorter* than its recorded
+        token count; a longer or in-place corrupted file maps cleanly and
+        reads garbage, and only the digest catches it.
+
         Raises `ValueError` naming both digests if `tokenizer_path`'s sha256
-        does not match `manifest.tokenizer_sha256`. Raises whatever
-        `Manifest.load` or `sha256_file` raise for a missing or malformed
-        file.
+        does not match `manifest.tokenizer_sha256`, or, under
+        `verify_shards`, naming the first shard whose contents do not match.
+        Raises whatever `Manifest.load` or `sha256_file` raise for a missing
+        or malformed file.
         """
         manifest = Manifest.load(manifest_path)
         actual_digest = sha256_file(tokenizer_path)
@@ -179,7 +217,18 @@ class ShardedTokens:
                 f"with a tokenizer whose sha256 is {manifest.tokenizer_sha256}, but "
                 f"{tokenizer_path} has sha256 {actual_digest}"
             )
-        return cls._from_entries(manifest_path.parent, manifest.shards, split)
+        shard_dir = manifest_path.parent
+        if verify_shards:
+            for entry in manifest.shards:
+                if entry.split != split:
+                    continue
+                observed = sha256_file(shard_dir / entry.name)
+                if observed != entry.sha256:
+                    raise ValueError(
+                        f"shard digest mismatch: {shard_dir / entry.name} has sha256 "
+                        f"{observed}, but manifest {manifest_path} records {entry.sha256}"
+                    )
+        return cls._from_entries(shard_dir, manifest.shards, split)
 
     @classmethod
     def _from_entries(
@@ -196,11 +245,20 @@ class ShardedTokens:
         tokenizer provenance.
         """
         self = cls()
-        # Sorted by name so shard N always precedes shard N+1 regardless of
-        # the order `entries` arrived in (e.g. a manifest's shards list,
-        # which interleaves both splits in write order).
+        # Ordered by the shard index parsed out of the name, so shard N
+        # always precedes shard N+1 regardless of the order `entries`
+        # arrived in (e.g. a manifest's shards list, which interleaves both
+        # splits in write order).
+        #
+        # Parsed rather than sorted lexicographically: names are zero-padded
+        # to five digits, so a lexicographic sort silently reorders the token
+        # stream the moment the padding overflows -- `train-100000.bin` sorts
+        # before `train-99999.bin`. That needs 100,000 shards, which
+        # `DEFAULT_SHARD_TOKENS` puts around a trillion tokens, but a small
+        # `--shard-tokens` reaches it, and the failure is silently corrupted
+        # training data rather than an error.
         split_entries = sorted(
-            (entry for entry in entries if entry.split == split), key=lambda e: e.name
+            (entry for entry in entries if entry.split == split), key=_shard_index
         )
         self._shards = [
             np.memmap(shard_dir / entry.name, dtype=DTYPE, mode="r", shape=(entry.tokens,))

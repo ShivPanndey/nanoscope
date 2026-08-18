@@ -29,7 +29,7 @@ import numpy as np
 import nanoscope
 from nanoscope.data.documents import iter_documents
 from nanoscope.data.manifest import Manifest, sha256_file
-from nanoscope.data.shards import ShardWriter
+from nanoscope.data.shards import MAX_TOKEN_ID, ShardWriter
 from nanoscope.tokenizer import Tokenizer
 from nanoscope.tokenizer.pretokenize import pretokenize
 from nanoscope.tokenizer.vocab import END_OF_TEXT_ID
@@ -49,11 +49,17 @@ DEFAULT_MAX_CHUNK_BYTES = 1024
 DEFAULT_VAL_FRACTION = 0.01
 
 # Also unmeasured. 10,000,000 `uint16` tokens is about 19 MiB per shard on
-# disk, a value chosen to trade resume granularity (a failed run resumes at
-# the last complete shard, so smaller shards resume finer-grained) against
-# file count (larger shards mean fewer files for `ShardedTokens.open` to
-# `mmap`). Revisit once the gated corpus task measures the real token count
-# this pipeline will actually write, and set this from that measurement.
+# disk, a value chosen to trade the blast radius of one corrupt or truncated
+# shard against file count (larger shards mean fewer files for
+# `ShardedTokens.open` to `mmap`). Revisit once the gated corpus task
+# measures the real token count this pipeline will actually write, and set
+# this from that measurement.
+#
+# An earlier version of this comment justified the value by resume
+# granularity, "a failed run resumes at the last complete shard". There is
+# no resume path: `prepare` always starts from `_shard_index = 0` and
+# rewrites every shard, and nothing reads an existing manifest to continue
+# from it. The rationale is stated in terms of what the code does.
 DEFAULT_SHARD_TOKENS = 10_000_000
 
 
@@ -127,19 +133,49 @@ def prepare(
     The longest chunk actually observed is recorded on the returned
     manifest as `max_chunk_bytes_observed`.
 
-    Raises `ValueError` if `val_fraction` is outside `[0, 1]`. Raises
-    whatever `Tokenizer.load` raises for a malformed tokenizer file.
+    Raises `ValueError` if `val_fraction` is outside `[0, 1]`, if the
+    tokenizer's vocabulary does not fit the `uint16` on-disk format, or if
+    `source` holds no documents. Raises whatever `Tokenizer.load` raises for
+    a malformed tokenizer file.
     """
     if not 0.0 <= val_fraction <= 1.0:
         raise ValueError(f"val_fraction must be in [0, 1], got {val_fraction}")
+    # The CLI already bounds `--limit` at 1, but `prepare` is importable and
+    # `limit=0` would otherwise be reported below as an empty corpus, naming
+    # the source for a fault in the argument.
+    if limit is not None and limit < 1:
+        raise ValueError(f"limit must be positive, got {limit}")
 
     tokenizer = Tokenizer.load(tokenizer_path)
+    # Checked here, up front, rather than left to `ShardWriter.write`'s
+    # per-id range check. That check is correct but it fires on the first
+    # document that happens to merge into a high enough rank, which on a
+    # multi-gigabyte corpus can be hours in and after shards are on disk.
+    # The vocabulary size is known before a single byte is encoded, and
+    # `tokenizer train` puts no ceiling on `--vocab-size`, so an oversized
+    # tokenizer is a reachable input rather than a hypothetical one.
+    if tokenizer.vocab_size > MAX_TOKEN_ID + 1:
+        raise ValueError(
+            f"tokenizer at {tokenizer_path} has a vocabulary of {tokenizer.vocab_size}, "
+            f"which does not fit the uint16 shard format (at most {MAX_TOKEN_ID + 1})"
+        )
     tokenizer_sha256 = sha256_file(tokenizer_path)
     source_sha256 = sha256_file(source)
 
+    document_count = _count_documents(source, limit)
+    # Before `mkdir`, so a mistyped `--source` does not leave an output
+    # directory behind. An empty corpus otherwise succeeds: the loop never
+    # runs, both writers close empty, and a manifest with no shards is
+    # written, so a truncated or misnamed source is indistinguishable from a
+    # real run until the training split turns out to be empty much later.
+    # `limit` cannot cause this on its own: the CLI bounds it at 1, so any
+    # non-empty corpus yields at least one document. An empty count means an
+    # empty source.
+    if document_count == 0:
+        raise ValueError(f"{source} contains no documents")
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    document_count = _count_documents(source, limit)
     val_indices = _validation_mask(document_count, val_fraction, seed)
 
     train_writer = ShardWriter(output_dir, "train", shard_tokens)
@@ -165,13 +201,31 @@ def prepare(
                 )
             max_chunk_bytes_observed = max(max_chunk_bytes_observed, longest)
 
-            ids = tokenizer.encode(document)
+            # `encode_chunks`, not `encode`: `encode` would run the same
+            # regex pass over the same bytes a second time, and the chunks
+            # the ceiling was just measured against are exactly the ones it
+            # would produce. Measured at about 42% of tokenization wall time
+            # on a stand-in corpus (see `Tokenizer.encode_chunks`).
+            ids = tokenizer.encode_chunks(chunks)
             ids.append(END_OF_TEXT_ID)
             writer = val_writer if index in val_indices else train_writer
             writer.write(ids)
     finally:
-        train_entries = train_writer.close()
-        val_entries = val_writer.close()
+        # Nested so the second close runs even if the first raises. Both do
+        # real I/O -- `close()` reopens each finished shard to digest it --
+        # so a full disk or a revoked mount can fail one of them, and without
+        # the nesting a raising `train_writer.close()` leaks the val handle,
+        # which is the exact leak this block exists to prevent.
+        #
+        # A close that raises still replaces an in-flight exception from the
+        # loop; that is what a `finally` does, and the original survives as
+        # the new exception's `__context__` rather than being lost. Not worth
+        # the machinery to invert: a failure to close is itself a failure the
+        # caller must see, and both are on the traceback.
+        try:
+            train_entries = train_writer.close()
+        finally:
+            val_entries = val_writer.close()
 
     manifest = Manifest(
         tokenizer_sha256=tokenizer_sha256,

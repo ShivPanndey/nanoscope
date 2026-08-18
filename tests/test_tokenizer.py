@@ -272,3 +272,20 @@ def test_load_rejects_a_file_with_mismatched_special_tokens(tmp_path: Path) -> N
     )
     with pytest.raises(ValueError, match="special token"):
         Tokenizer.load(path)
+
+
+@given(st.binary(max_size=512))
+@settings(deadline=None)
+def test_encode_chunks_agrees_with_encode_on_the_same_bytes(data: bytes) -> None:
+    """`encode(data)` is defined as `encode_chunks(pretokenize(data))`, and
+    `data.prepare` relies on that identity: it measures each document's chunk
+    lengths against the quadratic-encode ceiling and then encodes the chunks
+    it already has, rather than paying for the regex pass a second time.
+
+    Property-based rather than a fixed example, since the whole value of the
+    shortcut is that it holds for arbitrary corpus bytes. A tokenizer with
+    real merges, not the identity vocabulary, so chunk boundaries actually
+    matter to the result.
+    """
+    tokenizer = Tokenizer(train(b"the theatre theme, the other one" * 4, 300))
+    assert tokenizer.encode_chunks(pretokenize(data)) == tokenizer.encode(data)

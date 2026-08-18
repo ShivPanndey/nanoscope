@@ -21,7 +21,7 @@ from hypothesis import strategies as st
 
 import nanoscope
 from nanoscope.data.manifest import Manifest, ShardEntry, sha256_file
-from nanoscope.data.shards import ShardedTokens, ShardWriter
+from nanoscope.data.shards import DTYPE, ShardedTokens, ShardWriter
 from nanoscope.tokenizer import Tokenizer
 
 # ---------------------------------------------------------------------------
@@ -367,3 +367,97 @@ def test_the_raw_constructor_is_not_the_public_entry_point(tmp_path: Path) -> No
         ShardedTokens(tmp_path, [], "train")  # type: ignore[call-arg]
 
     assert len(ShardedTokens()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Shard ordering and content verification
+# ---------------------------------------------------------------------------
+
+
+def _handmade_entry(shard_dir: Path, name: str, ids: list[int]) -> ShardEntry:
+    """Write a shard file under an arbitrary name and describe it.
+
+    Names are chosen by the caller here rather than by `ShardWriter`, which
+    is the point: the index-parsing order has to be exercised at indices no
+    test could reach by actually writing 100,000 shards.
+    """
+    path = shard_dir / name
+    path.write_bytes(np.asarray(ids, dtype=DTYPE).tobytes())
+    return ShardEntry(
+        name=name,
+        split="train",
+        tokens=len(ids),
+        sha256=sha256_file(path),
+    )
+
+
+def test_shards_are_ordered_by_index_not_lexicographically(tmp_path: Path) -> None:
+    """Shard names are zero-padded to five digits, so a lexicographic sort
+    silently reorders the token stream the moment the padding overflows:
+    `train-100000.bin` sorts before `train-99999.bin`. Reaching that by
+    writing 100,000 real shards is not testable, so the entries are built by
+    hand at exactly the boundary.
+
+    The failure this pins is silent -- no exception, just training data in
+    the wrong order -- which is why it is worth a test despite needing a
+    trillion tokens at the default shard size to occur naturally.
+    """
+    entries = [
+        _handmade_entry(tmp_path, "train-99999.bin", [1, 2]),
+        _handmade_entry(tmp_path, "train-100000.bin", [3, 4]),
+    ]
+
+    for order in (entries, list(reversed(entries))):
+        reader = ShardedTokens._from_entries(tmp_path, order, "train")
+        np.testing.assert_array_equal(reader.window(0, 4), np.array([1, 2, 3, 4], dtype=DTYPE))
+
+
+def test_a_shard_name_the_writer_could_not_have_produced_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """An unrecognised name means the manifest and the writer disagree about
+    the on-disk layout. Falling back to some arbitrary order would hide that
+    behind data served in an order nobody chose."""
+    entries = [_handmade_entry(tmp_path, "train-shard-one.bin", [1, 2])]
+
+    with pytest.raises(ValueError, match="is not of the form"):
+        ShardedTokens._from_entries(tmp_path, entries, "train")
+
+
+def test_open_can_verify_shard_digests_and_rejects_a_corrupted_shard(
+    tmp_path: Path,
+) -> None:
+    """`ShardEntry.sha256` is recorded so shard contents can be "verified
+    without re-tokenizing anything" (the manifest module's own docstring),
+    but nothing could act on that promise until `verify_shards`.
+
+    The corruption here keeps the file length identical, which is exactly the
+    case `np.memmap` cannot catch: it raises only when a file is *shorter*
+    than its recorded token count, so a same-length corruption maps cleanly
+    and reads garbage. `prepare` leaves already-written shards behind when a
+    run fails partway, so a partially overwritten shard set is reachable.
+    """
+    tokenizer_path = tmp_path / "tokenizer.json"
+    manifest_path = _write_manifest_and_shards(tmp_path, tokenizer_path)
+
+    # Same length, different contents.
+    shard_path = tmp_path / "train-00000.bin"
+    original = shard_path.read_bytes()
+    shard_path.write_bytes(np.asarray([9, 9, 9], dtype=DTYPE).tobytes())
+    assert len(shard_path.read_bytes()) == len(original)
+
+    # The default path still opens it: verification is opt-in because it
+    # re-reads the whole split, which the training loop must not pay for on
+    # every open.
+    assert len(ShardedTokens.open(manifest_path, tokenizer_path, "train")) == 3
+
+    with pytest.raises(ValueError, match="shard digest mismatch"):
+        ShardedTokens.open(manifest_path, tokenizer_path, "train", verify_shards=True)
+
+
+def test_verify_shards_accepts_an_intact_shard_set(tmp_path: Path) -> None:
+    tokenizer_path = tmp_path / "tokenizer.json"
+    manifest_path = _write_manifest_and_shards(tmp_path, tokenizer_path)
+
+    reader = ShardedTokens.open(manifest_path, tokenizer_path, "train", verify_shards=True)
+    np.testing.assert_array_equal(reader.window(0, 3), np.array([1, 2, 3], dtype=DTYPE))

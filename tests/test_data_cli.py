@@ -532,3 +532,108 @@ def test_an_over_long_chunk_is_rejected_and_writes_nothing_new(tmp_path: Path) -
     assert "maxchunkbytes1024" in squashed
     assert not (output / "manifest.json").exists()
     assert list(output.iterdir()) == []
+
+
+def test_an_output_whose_nearest_existing_ancestor_is_a_file_fails_before_preparing(
+    tmp_path: Path,
+) -> None:
+    """`os.access` reports a regular file as writable, so a writability check
+    alone walks up to a file ancestor and passes. `mkdir(parents=True)` under
+    one then dies with `NotADirectoryError`: exit 1 and a traceback, after
+    the whole corpus and tokenizer have been read and digested. Verified
+    against the pre-fix build, which produced exactly that.
+    """
+    source = tmp_path / "corpus.txt"
+    _write_corpus(source, 5)
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    not_a_directory = tmp_path / "regular-file"
+    not_a_directory.write_bytes(b"x")
+
+    result = runner.invoke(
+        app,
+        [
+            "data",
+            "prep",
+            "--source",
+            str(source),
+            "--tokenizer",
+            str(tokenizer_path),
+            "--output",
+            str(not_a_directory / "shards"),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    squashed = _squash(result.output)
+    assert "invalidvalueforoutput" in squashed
+    assert "notadirectory" in squashed
+
+
+def test_an_output_under_a_dangling_symlink_fails_before_preparing(
+    tmp_path: Path,
+) -> None:
+    """`Path.exists()` follows symlinks, so a broken one reports False and the
+    ancestor walk steps straight past it to its parent, which is a perfectly
+    good directory. `mkdir` then fails with `FileExistsError`, since the link
+    itself does exist. The walk stops at anything that exists *or is a
+    symlink* for exactly this case.
+    """
+    source = tmp_path / "corpus.txt"
+    _write_corpus(source, 5)
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "nonexistent-target")
+
+    result = runner.invoke(
+        app,
+        [
+            "data",
+            "prep",
+            "--source",
+            str(source),
+            "--tokenizer",
+            str(tokenizer_path),
+            "--output",
+            str(dangling / "shards"),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    squashed = _squash(result.output)
+    assert "invalidvalueforoutput" in squashed
+    assert "notadirectory" in squashed
+
+
+def test_an_empty_corpus_exits_two_rather_than_reporting_a_successful_empty_run(
+    tmp_path: Path,
+) -> None:
+    """Before this, an empty `--source` printed "0 shards, 0 train tokens, 0
+    val tokens, 0 total tokens" and exited 0, so a mistyped or truncated
+    corpus looked exactly like a real run. `prepare` raises `ValueError`,
+    which the verb's existing handler turns into a clean exit 2.
+    """
+    source = tmp_path / "corpus.txt"
+    source.write_bytes(b"")
+    tokenizer_path = tmp_path / "tokenizer.json"
+    _write_tokenizer(tokenizer_path)
+    output = tmp_path / "shards"
+
+    result = runner.invoke(
+        app,
+        [
+            "data",
+            "prep",
+            "--source",
+            str(source),
+            "--tokenizer",
+            str(tokenizer_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "containsnodocuments" in _squash(result.output)
+    assert not output.exists()
